@@ -1,0 +1,12 @@
+# resultados de ejecuciones (se generan en bench/results/); conserva solo los ejemplos fijados en bench/examples/
+bench/results/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+# secrets: never in the repo (the pre-commit hook in .githooks/ also checks every commit)
+.env
+.env.*
+*.pem
+*.key
+secrets*

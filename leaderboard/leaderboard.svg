@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 156" width="880" height="156" role="img" aria-label="SLM leaderboard">
+<style>
+    .bg{fill:#ffffff}.t{fill:#1f2328;font:600 22px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+    .s{fill:#59636e;font:13px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+    .n{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+    .m{fill:#59636e;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+    .v{fill:#1f2328;font:600 12px ui-monospace,Menlo,monospace}
+    .track{fill:#eaeef2}.gen{fill:#2da44e}.code{fill:#0969da}.tools{fill:#bf8700}.long{fill:#8250df}
+    @media (prefers-color-scheme: dark){.bg{fill:#0d1117}.t,.n,.v{fill:#e6edf3}.s,.m{fill:#9198a1}.track{fill:#21262d}.gen{fill:#3fb950}.code{fill:#58a6ff}.tools{fill:#d29922}.long{fill:#a371f7}}
+    </style>
+<rect class="bg" width="880" height="156" rx="14"/>
+<text class="t" x="28" y="38">🏆 SLM Leaderboard</text>
+<text class="s" x="28" y="58">public benchmarks via lighteval</text>
+<rect class="gen" x="632" y="30" width="14" height="14" rx="3"/><text class="s" x="652" y="42">General</text>
+<rect class="code" x="742" y="30" width="14" height="14" rx="3"/><text class="s" x="762" y="42">Coding</text>
+</svg>

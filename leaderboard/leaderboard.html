@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SLM Leaderboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f6f7fb;--paper:#ffffff;--ink:#1c2240;--mut:#636a8c;--line:#e4e7f1;--soft:#eef0f7;--tint:20%;--focus:#3b82f6;
+--display:"Lexend",ui-rounded,"SF Pro Rounded",system-ui,sans-serif;--body:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121530;--paper:#191d3b;--ink:#eceefa;--mut:#9aa0c3;--line:#2a2f55;--soft:#20254a;--tint:34%;--focus:#7aa7ff}}
+:root[data-theme="dark"]{--bg:#121530;--paper:#191d3b;--ink:#eceefa;--mut:#9aa0c3;--line:#2a2f55;--soft:#20254a;--tint:34%;--focus:#7aa7ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1320px;margin:0 auto;padding:0 28px}
+header{padding:56px 0 30px}
+.brand{display:flex;align-items:flex-end;gap:22px;flex-wrap:wrap}
+.word{font:700 clamp(40px,6vw,64px)/.95 var(--display);letter-spacing:-.035em;margin:0}
+.word .s{color:#ffb020}.word .l{color:#ff7a3d}.word .m{color:#ff4f8b}
+.word small{display:block;font:600 clamp(18px,2.2vw,24px)/1.2 var(--display);letter-spacing:-.01em;color:var(--mut);margin-top:10px}
+.bars{display:flex;align-items:flex-end;gap:4px;height:88px;margin-left:auto;padding-bottom:4px}
+.bars i{display:block;width:9px;border-radius:3px 3px 1px 1px;transform-origin:bottom;animation:rise .9s cubic-bezier(.2,.8,.2,1) both}
+.bars i:nth-child(n){animation-delay:calc(var(--d,0) * 1ms)}
+@keyframes rise{from{transform:scaleY(.05)}to{transform:scaleY(1)}}
+.lede{max-width:68ch;color:var(--mut);margin:18px 0 0}
+.lede b{color:var(--ink);font-weight:600}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 18px;border-bottom:1px solid var(--line)}
+.tabs button{font:600 15px var(--display);color:var(--mut);background:none;border:0;padding:12px 14px 13px;cursor:pointer;display:flex;align-items:center;gap:9px;
+  border-bottom:3px solid transparent;margin-bottom:-1px;border-radius:8px 8px 0 0}
+.tabs button:hover{color:var(--ink);background:var(--soft)}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--hue)}
+.tabs .dot{width:10px;height:10px;border-radius:50%;background:var(--hue)}
+.tabs .count{font:600 12px var(--body);background:var(--soft);color:var(--mut);border-radius:20px;padding:1px 8px}
+.panel[hidden]{display:none}
+.intro{display:grid;grid-template-columns:minmax(0,1fr);margin:0 0 16px}
+.intro h2{font:600 26px/1.2 var(--display);letter-spacing:-.02em;margin:6px 0 6px}
+.intro p{margin:0;color:var(--mut);max-width:80ch}
+.scroll{overflow-x:auto;background:var(--paper);border:1px solid var(--line);border-radius:18px}
+table{border-collapse:separate;border-spacing:0;width:100%;font-variant-numeric:tabular-nums}
+th{font:600 12.5px/1.25 var(--body);color:var(--mut);text-align:right;padding:0;border-bottom:1px solid var(--line);vertical-align:bottom;background:var(--paper)}
+th button{all:unset;display:block;cursor:pointer;white-space:nowrap;padding:14px 14px 12px;width:100%;box-sizing:border-box;text-align:inherit}
+th button:hover{color:var(--ink)}
+th[aria-sort] button::after{content:" \2193";color:var(--hue)}th[aria-sort="ascending"] button::after{content:" \2191"}
+th.model,th.rank{text-align:left}
+td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+td.rank{width:56px;text-align:left}
+.rk{display:inline-grid;place-items:center;width:30px;height:30px;color:var(--mut);font-weight:600}
+.medal{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;font:700 14px var(--display);color:#1c2240}
+.medal.gold{background:linear-gradient(140deg,#ffe07a,#ffb020)}.medal.silver{background:linear-gradient(140deg,#eef0f7,#b8bfd6)}
+.medal.bronze{background:linear-gradient(140deg,#ffc9a0,#e0824a)}
+td.model{text-align:left;white-space:normal;min-width:240px;position:sticky;left:0;background:var(--paper);z-index:1}
+th.model{position:sticky;left:0;z-index:2}
+.name{font:600 16px/1.3 var(--display);letter-spacing:-.01em}
+.tag{display:inline-block;margin-left:8px;font:600 11.5px var(--body);color:var(--mut);border:1px dashed var(--mut);border-radius:20px;padding:0 8px;vertical-align:2px}
+.facts{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap}
+.facts span{font:600 12px var(--body);background:var(--soft);border-radius:6px;padding:1px 7px;color:var(--ink)}
+.hw{display:block;color:var(--mut);font-size:12.5px;margin-top:4px}
+td.num{background:linear-gradient(to top,color-mix(in srgb,var(--hue) var(--tint),transparent) calc(var(--v,0) * 100%),transparent 0);box-shadow:inset 3px 0 var(--paper),inset -3px 0 var(--paper);font-weight:600}
+td.num .val{font-size:15px}
+td.num .sub{display:block;font:500 11.5px var(--body);color:var(--mut);margin-top:1px}
+td.na,td.plain{background:none;color:var(--mut);font-weight:500}
+td.score{background:none;min-width:150px}
+td.score .val{font:700 20px var(--display);letter-spacing:-.02em}
+.meter{display:block;height:6px;border-radius:6px;margin-top:6px;margin-left:auto;width:120px;
+  background:linear-gradient(90deg,var(--hue) calc(var(--v) * 100%),var(--soft) 0)}
+tr.divider td{background:var(--soft);color:var(--mut);font-size:13px;text-align:left;white-space:normal;padding:9px 14px}
+tr.unranked td.model .name{color:var(--mut)}
+tbody tr.ranked:hover td,tbody tr.unranked:hover td{box-shadow:inset 0 0 0 9999px color-mix(in srgb,var(--ink) 4%,transparent)}
+.settings{margin:34px 0 0}
+.settings summary{cursor:pointer;font:600 16px var(--display);padding:6px 0;width:max-content}
+.settings .scroll{margin-top:12px}
+table.plain th,table.plain td{text-align:left;font-weight:500}
+table.plain th{padding:12px 14px}
+footer{color:var(--mut);font-size:13.5px;padding:34px 0 56px;max-width:90ch}
+footer p{margin:0 0 8px}
+code{font:13px ui-monospace,Menlo,monospace;background:var(--soft);border-radius:6px;padding:1px 6px}
+.empty{background:var(--paper);border:1px dashed var(--line);border-radius:18px;padding:56px 28px;text-align:center}
+.empty h2{font:600 24px var(--display);margin:0 0 8px}.empty p{color:var(--mut);margin:0}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:6px}
+@media (max-width:720px){.wrap{padding:0 16px}header{padding-top:32px}.bars{display:none}td,th button{padding-left:10px;padding-right:10px}
+  td.model{min-width:180px}td.score{min-width:110px}.meter{width:80px}}
+
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:16px;margin:0 0 18px}
+.chartcard{margin:0;background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:16px 16px 8px}
+.chartcard h3{font:600 16px/1.3 var(--display);margin:0 0 2px;letter-spacing:-.01em}
+.chartcard p{margin:0 0 6px;color:var(--mut);font-size:13px}
+svg.chart{display:block;width:100%;height:auto;overflow:visible}
+svg.chart .grid{stroke:var(--line);stroke-width:1}
+svg.chart .axis{stroke:var(--mut);stroke-width:1}
+svg.chart .tick,svg.chart .axislabel{fill:var(--mut);font:500 11px var(--body)}
+svg.chart .name{fill:var(--ink);font:500 11px var(--body)}
+svg.chart .val{fill:var(--ink);font:700 12px var(--display)}
+svg.chart .bar{fill:var(--hue)}
+svg.chart .faded{fill:color-mix(in srgb,var(--hue) 30%,transparent);stroke:var(--hue);stroke-width:1.2;stroke-dasharray:3 3}
+svg.chart .dot{fill:var(--hue);stroke:var(--paper);stroke-width:2}
+svg.chart .dot.faded{fill:color-mix(in srgb,var(--hue) 35%,var(--paper));stroke:var(--hue);stroke-width:1.5;stroke-dasharray:none}
+svg.chart .quad{fill:color-mix(in srgb,var(--hue) 9%,transparent)}
+svg.chart .quadlabel{fill:var(--mut);font:600 11px var(--body)}
+svg.chart .hitbox{fill:transparent}
+svg.chart .hit:hover .bar,svg.chart .hit:hover .dot{filter:brightness(1.12)}
+svg.chart .hit:hover .name{font-weight:700}
+
+@media (prefers-reduced-motion:reduce){.bars i{animation:none}}
+</style></head><body>
+<div class="wrap">
+<header><div class="brand"><h1 class="word"><span class="s">s</span><span class="l">l</span><span class="m">m</span>bench<small>Leaderboard of small language models</small></h1>
+<div class="bars" aria-hidden="true"><i style="height:12px;background:#ffc93c"></i><i style="height:20px;background:#ffc93c"></i><i style="height:16px;background:#ffc93c"></i><i style="height:28px;background:#ffa83a"></i><i style="height:24px;background:#ffa83a"></i><i style="height:36px;background:#ff8a3d"></i><i style="height:32px;background:#ff8a3d"></i><i style="height:44px;background:#ff6a5c"></i><i style="height:40px;background:#ff6a5c"></i><i style="height:52px;background:#ff4f8b"></i><i style="height:48px;background:#ff4f8b"></i><i style="height:60px;background:#d946ef"></i><i style="height:56px;background:#d946ef"></i><i style="height:68px;background:#a855f7"></i><i style="height:64px;background:#a855f7"></i><i style="height:76px;background:#8b5cf6"></i><i style="height:72px;background:#8b5cf6"></i><i style="height:84px;background:#6366f1"></i><i style="height:80px;background:#6366f1"></i><i style="height:88px;background:#3b82f6"></i></div></div>
+<p class="lede">Every number was measured locally with <b>slmbench</b> on public benchmarks run through Hugging Face's lighteval. Updated 2026-11-13.</p></header>
+<main><div class="empty"><h2>No models yet</h2><p>Run <code>slmbench run</code> and every benchmark you measure will show up here, one row per model and quantization.</p></div></main>
+<footer><p>A mode's score is the mean of its benchmarks' headline metrics. Rows are comparable only when every benchmark of the mode was measured on the full set; those come first and get medals.
+Rows marked “k of N measured” or “sample run” are listed below them and are indicative only.</p>
+<p>Compare models measured on the same machine and settings (see “Run settings”). Click a column header to sort. Generated by <code>slmbench</code>.</p></footer>
+</div>
+<script>
+(function(){
+  document.querySelectorAll('.bars i').forEach(function(b,i){b.style.setProperty('--d',i*35)});
+  var tabs=[].slice.call(document.querySelectorAll('[role=tab]'));
+  function show(mode,focus){tabs.forEach(function(t){var on=t.dataset.mode===mode;t.setAttribute('aria-selected',on);t.tabIndex=on?0:-1;
+    document.getElementById('p-'+t.dataset.mode).hidden=!on;if(on&&focus)t.focus()});
+    try{history.replaceState(null,'','#'+mode)}catch(e){}}
+  tabs.forEach(function(t,i){t.addEventListener('click',function(){show(t.dataset.mode)});
+    t.addEventListener('keydown',function(e){var d=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;if(d){e.preventDefault();show(tabs[(i+d+tabs.length)%tabs.length].dataset.mode,true)}})});
+  if(tabs.length){var h=location.hash.slice(1);show(tabs.some(function(t){return t.dataset.mode===h})?h:tabs[0].dataset.mode)}
+  document.querySelectorAll('.panel table').forEach(function(t){
+    var ths=[].slice.call(t.tHead.rows[0].cells);
+    ths.forEach(function(th,i){th.querySelector('button').addEventListener('click',function(){
+      var asc=th.getAttribute('aria-sort')==='descending';ths.forEach(function(x){x.removeAttribute('aria-sort')});
+      th.setAttribute('aria-sort',asc?'ascending':'descending');
+      var body=t.tBodies[0],rows=[].slice.call(body.rows).filter(function(r){return !r.classList.contains('divider')});
+      var div=body.querySelector('tr.divider');if(div)div.remove();
+      rows.sort(function(a,b){var x=a.cells[i].dataset.v,y=b.cells[i].dataset.v,nx=parseFloat(x),ny=parseFloat(y);
+        var r=(!isNaN(nx)&&!isNaN(ny))?nx-ny:String(x).localeCompare(String(y));if(i<2)r=-r;return asc?r:-r});
+      rows.forEach(function(r){body.appendChild(r)})})})});
+})();
+</script></body></html>

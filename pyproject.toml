@@ -1,0 +1,65 @@
+[project]
+name = "slmbench"
+version = "0.1.1"
+description = "Benchmark small language models (SLMs) on public benchmarks via lighteval, with a TUI; works with any OpenAI-compatible server"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "licenses/*"]
+requires-python = ">=3.10"
+authors = [{ name = "emi-dm" }]
+keywords = ["llm", "slm", "small language models", "benchmark", "evaluation", "lighteval", "llama.cpp", "ollama", "tui",
+            "leaderboard", "function calling", "code generation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# slmbench is built on lighteval (Hugging Face).
+# Pinned versions: lighteval 0.13.0 is incompatible with the latest huggingface_hub / transformers / datasets / xxhash.
+dependencies = [
+    "lighteval[extended_tasks]==0.13.0",
+    "huggingface_hub<1",
+    "transformers<5",
+    "datasets<5",
+    "xxhash<3.6",
+    # lighteval requires torch, but slmbench never runs models with it (they're served through an API). Declared here so
+    # that uv takes it from the CPU-only index on Linux (see [tool.uv.sources]): ~200 MB instead of several GB of NVIDIA
+    # libraries.
+    "torch>=2.0,<3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/emi-dm/slm-bench"
+Repository = "https://github.com/emi-dm/slm-bench"
+Issues = "https://github.com/emi-dm/slm-bench/issues"
+Documentation = "https://github.com/emi-dm/slm-bench/tree/main/docs"
+Changelog = "https://github.com/emi-dm/slm-bench/releases"
+
+[project.scripts]
+slmbench = "slmbench.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "bench"
+module-name = "slmbench"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

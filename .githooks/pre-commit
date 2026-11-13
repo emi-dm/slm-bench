@@ -1,0 +1,58 @@
+#!/bin/sh
+# Blocks a commit that would publish an API key or another secret.
+# Enabled per clone with:  git config core.hooksPath .githooks
+exec python3 - "$@" <<'PY'
+import json, os, re, subprocess, sys
+
+PATTERNS = [
+    ("OpenAI / OpenRouter / Anthropic-style key", r"sk-[A-Za-z0-9_\-]{20,}"),
+    ("Hugging Face token", r"hf_[A-Za-z0-9]{30,}"),
+    ("GitHub token", r"(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"),
+    ("AWS access key", r"AKIA[0-9A-Z]{16}"),
+    ("Google API key", r"AIza[0-9A-Za-z_\-]{30,}"),
+    ("Slack token", r"xox[baprs]-[A-Za-z0-9\-]{10,}"),
+    ("Tavily key", r"tvly-[A-Za-z0-9]{10,}"),
+    ("private key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    ("Bearer token", r"Bearer [A-Za-z0-9._\-]{20,}"),
+    ("api_key value", r"""["']?api[_-]?key["']?\s*[:=]\s*["'][^"'*\s]{8,}["']"""),
+]
+
+# exact values that must never be committed: the key saved in slmbench's config and the usual env variables
+secrets = set()
+for path in (os.path.expanduser("~/.config/slmbench/config.json"),
+             os.path.join(os.environ.get("SLMBENCH_HOME", ""), "config.json") if os.environ.get("SLMBENCH_HOME") else ""):
+    try:
+        v = json.load(open(path)).get("api_key") or ""
+        if len(v) >= 8:
+            secrets.add(v)
+    except (OSError, ValueError):
+        pass
+for k, v in os.environ.items():
+    if re.search(r"API_KEY|TOKEN|SECRET", k) and len(v) >= 12:
+        secrets.add(v)
+
+files = subprocess.run(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+                       capture_output=True).stdout.decode(errors="replace").split("\0")
+problems = []
+for f in filter(None, files):
+    data = subprocess.run(["git", "show", f":{f}"], capture_output=True).stdout      # the staged version, binaries too
+    for s in secrets:
+        if s.encode() in data:
+            problems.append(f"{f}: contains a configured API key / token")
+    if f == ".githooks/pre-commit":
+        continue                                                          # the patterns themselves
+    added = subprocess.run(["git", "diff", "--cached", "-U0", "--no-color", "--", f], capture_output=True).stdout.decode(errors="replace")
+    for line in added.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        for label, rx in PATTERNS:
+            if re.search(rx, line):
+                problems.append(f"{f}: looks like a {label}")
+                break
+if problems:
+    print("✗ commit blocked: possible secret in the staged changes (the value is not shown)", file=sys.stderr)
+    for p in sorted(set(problems)):
+        print("   - " + p, file=sys.stderr)
+    print("  Remove it (git restore --staged <file>), or if it's a false positive: git commit --no-verify", file=sys.stderr)
+    sys.exit(1)
+PY
