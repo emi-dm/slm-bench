@@ -234,9 +234,8 @@ def cmd_leaderboard(args):
         p = leaderboard.rebuild(s)
         print(f"{p['md']}\n{p['html']}\n{p['svg']}")
     elif args.action == "open":
-        import webbrowser
         p = leaderboard.rebuild(s)
-        webbrowser.open(p["html"].as_uri())
+        leaderboard.open_html(p["html"])
     elif args.action == "path":
         print(leaderboard.paths(s)["md"])
     elif args.action == "remove":

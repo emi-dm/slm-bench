@@ -472,6 +472,26 @@ def rebuild(s: Settings | None = None) -> dict:
     return p
 
 
+def _is_wsl() -> bool:
+    return "microsoft" in platform.uname().release.lower()
+
+
+def open_html(path: Path) -> None:
+    """Abre `path` en el navegador. En WSL usa el navegador de Windows (xdg-open no suele tener uno configurado)."""
+    path = Path(path).resolve()
+    if _is_wsl():
+        try:
+            win = subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, check=True).stdout.strip()
+            # explorer.exe devuelve código 1 aunque funcione: no se comprueba.
+            subprocess.Popen(["explorer.exe", win], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    import webbrowser
+    if not webbrowser.open(path.as_uri()):
+        raise RuntimeError(f"No se pudo abrir el navegador. Abre a mano: {path}")
+
+
 def text_table(s: Settings | None = None) -> str:
     entries = load_entries(s)
     if not entries:

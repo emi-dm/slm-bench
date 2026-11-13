@@ -1225,9 +1225,8 @@ class App:
                 if key == "view":
                     ui.md_pager("Leaderboard", leaderboard.markdown(leaderboard.load_entries(s)))
                 elif key == "open":
-                    import webbrowser
                     pp = leaderboard.rebuild(s)
-                    webbrowser.open(pp["html"].as_uri())
+                    leaderboard.open_html(pp["html"])
                     ui.message(f"Abierto en el navegador:\n{pp['html']}", C_OK)
                 elif key == "rebuild":
                     pp = leaderboard.rebuild(s)
