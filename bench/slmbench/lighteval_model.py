@@ -307,6 +307,8 @@ class SlmbenchOpenAIModel(LightevalModel):
                 if base and max_tokens:
                     max_tokens = max(max_tokens, self.task_min_tokens[base])
                 tools = (doc.specific or {}).get("tools") if isinstance(doc.specific, dict) else None
+                if isinstance(tools, str):                # stored as JSON text (one Arrow type per column in the details)
+                    tools = json.loads(tools)
                 for i in range(n):
                     jobs.append((msgs[d], max_tokens, doc.stop_sequences, str(doc.task_name or ""), i, n, tools))
                     owner.append(d)

@@ -79,8 +79,10 @@ def bfcl_prompt(line: dict, task_name: str = "bfcl") -> Doc:
     turn = question[0] if question and isinstance(question[0], list) else question
     user = "\n\n".join(m["content"] for m in turn if m.get("role") == "user")
     system = next((m["content"] for m in turn if m.get("role") == "system"), None)
-    spec = {"tools": to_tools(functions), "functions": line["functions"], "answer": line["answer"], "category": line["category"],
-            "id": line["id"]}
+    # tools stay as JSON text, like functions and answer: lighteval saves `specific` with one Arrow type per column, and the
+    # same parameter's `default` is a bool in one function and a string in another (e.g. `detailed`: False / "false").
+    spec = {"tools": json.dumps(to_tools(functions)), "functions": line["functions"], "answer": line["answer"],
+            "category": line["category"], "id": line["id"]}
     if system:
         spec["system_prompt"] = system
     return Doc(task_name=task_name, query=user, choices=[line["answer"]], gold_index=0, specific=spec)
