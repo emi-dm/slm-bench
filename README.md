@@ -91,11 +91,13 @@ Every benchmark, with what it measures, its dataset, metric, origin and **a real
 [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) server with the [Pi](https://pi.dev) agent as
 its harness, on the **pi.dev** website. Chrome opens in a window and Pi's interface shows every step in the terminal.
 
-![slmbench browse: LFM3-1.7B uses pi.dev's menu to open the Changelog and reads the newest Pi version](assets/browse-demo.gif)
+![slmbench browse: LFM3-1.7B clicks, scrolls and filters on pi.dev](assets/browse-demo.gif)
 
-*A real session (2× speed, [MP4](assets/browse-demo.mp4)): LFM3-1.7B (Q4_K_M) is asked to use pi.dev's menu to open the
-Changelog and say the newest Pi version. Left, Pi's interface with the model's reasoning and tool calls; right, the Chrome
-tab it drives.*
+*Real sessions (2× speed, [MP4](assets/browse-demo.mp4)) with LFM3-1.7B (Q4_K_M), one task each: **clicks** (open the
+newest release in the Changelog), **scrolling** (PageDown to the section on Pi's modes) and **filters** (type a name, pick a
+package type and press SEARCH on the Packages page). The banner shows the task, each step (tool and element) and the answer;
+below, Pi's interface with the model's reasoning and tool calls, and the Chrome tab it drives, where the element it acts on
+is outlined.*
 
 ```bash
 slmbench browse                                   # demo: type in Pi what it should do on pi.dev (Ctrl+D to leave)
