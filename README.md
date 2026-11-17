@@ -85,6 +85,30 @@ slmbench run --benchmarks humaneval_plus,ifstruct --max-samples 50     # specifi
 
 Every benchmark, with what it measures, its dataset, metric, origin and **a real sample task** (the exact prompt the model receives), is listed in **[docs/benchmarks.md](docs/benchmarks.md)**, in `slmbench benchmarks <key>` and in the TUI (*3 · Benchmarks*).
 
+## Browsing pi.dev (Pi + Chrome DevTools MCP)
+
+`slmbench browse` lets you **watch the model use a web browser**: it drives a real Chrome through the
+[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) server with the [Pi](https://pi.dev) agent as
+its harness, on the **pi.dev** website. Chrome opens in a window and Pi's interface shows every step in the terminal.
+
+![slmbench browse: LFM3-1.7B clicks, scrolls and filters on pi.dev](assets/browse-demo.gif)
+
+*Real sessions (2× speed, [MP4](assets/browse-demo.mp4)) with LFM3-1.7B (Q4_K_M), one task each: **clicks** (open the
+newest release in the Changelog), **scrolling** (PageDown to the section on Pi's modes) and **filters** (type a name, pick a
+package type and press SEARCH on the Packages page). The banner shows the task, each step (tool and element) and the answer;
+below, Pi's interface with the model's reasoning and tool calls, and the Chrome tab it drives, where the element it acts on
+is outlined.*
+
+```bash
+slmbench browse                                   # demo: type in Pi what it should do on pi.dev (Ctrl+D to leave)
+slmbench browse "Open the page that lists the models"     # demo with a first task
+slmbench browse --tasks my-tasks.json             # your tasks, each checked and scored; report in the results folder
+```
+
+It is not one of the benchmark modes: the tasks are yours (slmbench ships none), and the scored runs are not added to the
+leaderboard. Task file format, checks and requirements (Node.js ≥ 22.19; Pi, Chrome DevTools MCP and Chrome for Testing are
+installed on first use) in **[docs/browse.md](docs/browse.md)**.
+
 ## Choosing the model to evaluate
 
 slmbench doesn't load models itself: it talks to a **server with an OpenAI-compatible API**. The *model to evaluate* is the pair *server + model id*. It's always shown on the home screen and saved in `~/.config/slmbench/config.json`.
@@ -160,6 +184,7 @@ slmbench config set ui_lang es             # TUI in Spanish
 | [docs/adapting-a-benchmark.md](docs/adapting-a-benchmark.md) | How to adapt a Hugging Face benchmark so slmbench can run it |
 | [docs/lighteval.md](docs/lighteval.md) | How lighteval is integrated (custom model, no litellm) and version pitfalls |
 | [docs/llama-cpp.md](docs/llama-cpp.md) | Serving GGUF models with llama.cpp: getting models and an argument reference |
+| [docs/browse.md](docs/browse.md) | `slmbench browse`: the model browses pi.dev with Pi + Chrome DevTools MCP (demo, or your tasks scored) |
 | [docs/omp.md](docs/omp.md) | Using local models as a coding agent with *oh my pi* |
 
 ## Notes
@@ -185,6 +210,13 @@ The coding benchmarks run code written by the model you're testing. slmbench nev
 - **No fallback:** if the sandbox isn't ready, coding benchmarks don't start. lighteval's own LiveCodeBench tasks (`lcb:*`), which run code on the host, are refused; slmbench's `lcb` is the same benchmark run in the sandbox.
 
 Checked from inside the sandbox: model code runs as `slmrun0` with `sudo` refused and writes to `/usr`, `/etc`, the harness and other checks' folders denied; a fork bomb is contained and cleaned up; your home folder and files aren't visible, files written there don't appear on the host, HTTP requests are rejected, raw TCP connections deliver no data, UDP doesn't get out, and the only credential-looking variable the sandbox has is a placeholder (not your token), which the code doesn't even see.
+
+### Browsing pi.dev
+
+`slmbench browse` gives the model a real browser, so it is limited to one website: only `pi.dev` and its subdomains resolve
+in that Chrome (any other link doesn't load). The model gets only the Chrome DevTools MCP browser tools (snapshot, click,
+fill, type, key, hover, navigate): no shell or file tools, and JavaScript evaluation is off. Chrome uses a throwaway profile
+and never the system keyring, and Pi uses its own configuration folder (your `~/.pi` is not read).
 
 ### API keys
 

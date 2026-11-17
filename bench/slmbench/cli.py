@@ -154,6 +154,48 @@ def cmd_run(args):
     _print_result(out)
 
 
+def cmd_browse(args):
+    """The model browses pi.dev with Pi + Chrome DevTools MCP: a demo you watch and talk to, or your task file, scored."""
+    from . import browser
+    s = config.load()
+    _apply(s, args, [("base_url", "base_url"), ("model", "model"), ("api_key", "api_key"), ("temperature", "temperature"),
+                     ("ld_max_new_tokens", "max_tokens"), ("reasoning_budget", "reasoning_budget"), ("timeout", "timeout"),
+                     ("out_dir", "out")])
+    if args.setup or browser.status():
+        if not args.setup:
+            print(T("Instalando Pi, Chrome DevTools MCP y Chrome for Testing (una vez)…",
+                    "Installing Pi, Chrome DevTools MCP and Chrome for Testing (once)…"))
+        if not browser.provision(on_line=lambda l: print("  " + l, flush=True)):
+            sys.exit("✗ " + "; ".join(browser.status()))
+        if args.setup:
+            return
+    from .servers import probe
+    try:
+        ids = probe(s.base_url, s.api_key, timeout=5)
+    except Exception as e:
+        sys.exit(T(f"No hay servidor en {s.base_url} ({type(e).__name__}). Elige el modelo con `slmbench use` o en la TUI.",
+                   f"No server at {s.base_url} ({type(e).__name__}). Pick the model with `slmbench use` or in the TUI."))
+    model = s.model or (ids[0] if ids else "default")
+    if args.tasks:
+        try:
+            browser.load_tasks(args.tasks)
+        except (OSError, ValueError) as e:
+            sys.exit(f"✗ {args.tasks}: {e}")
+        watch = not args.headless and browser.watch_available()
+        if not args.headless and not watch:
+            print("ℹ " + T("Sin pantalla o sin terminal: se ejecuta sin interfaz.", "No display or no terminal: running headless."))
+        out = browser.run_tasks(s, model, args.tasks, watch=watch, on_line=lambda l: print(l, flush=True),
+                                max_steps=args.max_steps or browser.MAX_STEPS)
+        print("\n" + (out / "report.md").read_text())
+        return
+    if not browser.watch_available():
+        sys.exit(T("La demo necesita un terminal y una pantalla (Chrome se abre en una ventana).",
+                   "The demo needs a terminal and a display (Chrome opens in a window)."))
+    print(T(f"▶ {model} navega {browser.SITE} · escribe en Pi lo que quieres que haga · Ctrl+D para salir",
+            f"▶ {model} browses {browser.SITE} · type in Pi what it should do · Ctrl+D to leave"), flush=True)
+    browser.demo(s, model, args.task)
+
+
 def cmd_benchmarks(args):
     from .benchmarks import explore
     if args.markdown:
@@ -319,6 +361,22 @@ def main():
                                           "score a run again from its saved answers (no calls to the model)"))
     rs.add_argument("run", help=T("carpeta de la ejecución o su nombre", "run folder or its name"))
     rs.set_defaults(fn=cmd_rescore)
+    bw = sub.add_parser("browse", help=T("el modelo navega pi.dev con Pi + Chrome DevTools MCP (demo, o tus tareas puntuadas)",
+                                         "the model browses pi.dev with Pi + Chrome DevTools MCP (demo, or your tasks scored)"))
+    bw.add_argument("task", nargs="?", help=T("demo: primer mensaje para el agente (luego escribes en Pi)",
+                                              "demo: first message for the agent (then you type in Pi)"))
+    bw.add_argument("--tasks", metavar="FILE", help=T("tus tareas (JSON o JSONL) con la respuesta o dirección esperada: se puntúan",
+                                                      "your tasks (JSON or JSONL) with the expected answer or address: scored"))
+    bw.add_argument("--headless", action="store_true", help=T("--tasks sin ventana ni interfaz de Pi", "--tasks without a window or Pi's interface"))
+    bw.add_argument("--max-steps", type=int, help=T("acciones por tarea (por defecto 30)", "actions per task (default 30)"))
+    bw.add_argument("--setup", action="store_true", help=T("solo instalar Pi, Chrome DevTools MCP y Chrome", "only install Pi, Chrome DevTools MCP and Chrome"))
+    for a in ("--base-url", "--model", "--api-key", "--out"):
+        bw.add_argument(a)
+    bw.add_argument("--temperature", type=float)
+    bw.add_argument("--max-tokens", type=int)
+    bw.add_argument("--reasoning-budget", type=int)
+    bw.add_argument("--timeout", type=float)
+    bw.set_defaults(fn=cmd_browse)
     r = sub.add_parser("run", help=T("ejecutar los benchmarks del modo (o los indicados)", "run the mode's benchmarks (or the given ones)"))
     r.add_argument("--mode", choices=modes)
     r.add_argument("--resume", metavar="RUN", help=T("continuar una ejecución interrumpida (reutiliza sus respuestas)",
