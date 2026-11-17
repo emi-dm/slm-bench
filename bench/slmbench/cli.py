@@ -145,8 +145,7 @@ def cmd_run(args):
     try:
         ids = probe(s.base_url, s.api_key, timeout=5)
     except Exception as e:
-        sys.exit(T(f"No hay servidor en {s.base_url} ({type(e).__name__}). Elige el modelo con `slmbench use` o en la TUI.",
-                   f"No server at {s.base_url} ({type(e).__name__}). Pick the model with `slmbench use` or in the TUI."))
+        sys.exit(_probe_failed(e, s.base_url, s.api_key))
     model = s.model or (ids[0] if ids else "default")
     print(f"▶ {T('Modelo', 'Model')}: {model}  ·  {s.base_url}")
     print(f"  {T('Benchmarks', 'Benchmarks')}: {', '.join(keys)}{(' + ' + args.extra) if args.extra else ''}  ·  "
@@ -186,6 +185,16 @@ def cmd_chat(args):
     os.execvp(cmd[0], cmd)
 
 
+def _probe_failed(e: Exception, url: str, api_key: str) -> str:
+    import os
+    from .servers import needs_key, probe_error
+    msg = probe_error(e, url, bool(api_key or os.environ.get("SLMBENCH_API_KEY")))
+    if needs_key(e):
+        return msg + " " + T(f"Ponla con `slmbench use --base-url {url} --api-key CLAVE` o en la TUI (Modelo a evaluar → Clave de API).",
+                             f"Set it with `slmbench use --base-url {url} --api-key KEY` or in the TUI (Model to evaluate → API key).")
+    return msg + " " + T("Elige el modelo con `slmbench use` o en la TUI.", "Pick the model with `slmbench use` or in the TUI.")
+
+
 def cmd_models(args):
     from .servers import probe
     s = config.load()
@@ -193,7 +202,7 @@ def cmd_models(args):
     try:
         ids = probe(url, s.api_key, timeout=5)
     except Exception as e:
-        sys.exit(T(f"No hay servidor en {url} ({type(e).__name__}).", f"No server at {url} ({type(e).__name__})."))
+        sys.exit(_probe_failed(e, url, s.api_key))
     print(f"{T('Modelos en', 'Models at')} {url}:")
     for m in ids:
         mark = "  ←" if m == s.model or (not s.model and m == ids[0]) else ""
@@ -210,7 +219,9 @@ def cmd_use(args):
         ids = probe(s.base_url, s.api_key, timeout=5)
         status = T("conectado", "connected") + ("" if (not s.model or s.model in ids) else f" (⚠ {s.model} ∉ {ids})")
     except Exception as e:
-        status = T("sin conexión", "not connected") + f" ({type(e).__name__})"
+        from .servers import needs_key, probe_error
+        status = (probe_error(e, s.base_url, bool(s.api_key)) + " " + T("Pásala con --api-key.", "Pass it with --api-key.")
+                  if needs_key(e) else T("sin conexión", "not connected") + f" ({type(e).__name__})")
     print(f"{T('Modelo a evaluar', 'Model to evaluate')}: {s.model or T('(el primero del servidor)', '(first one on the server)')}\n"
           f"{T('Servidor', 'Server')}: {s.base_url}  [{status}]")
 

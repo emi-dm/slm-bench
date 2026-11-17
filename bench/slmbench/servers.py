@@ -176,11 +176,31 @@ INSTALL_HINT = ("install llama.cpp: `brew install llama.cpp` (macOS/Linux), a re
 
 def probe(base_url: str, api_key: str = "", timeout: float = 4) -> list[str]:
     """Devuelve los ids de /models; lanza excepción si no hay conexión."""
+    api_key = api_key or os.environ.get("SLMBENCH_API_KEY", "")      # the same fallback the run itself uses
     req = urllib.request.Request(base_url.rstrip("/") + "/models",
                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
     with _OPENER.open(req, timeout=timeout) as r:
         data = json.load(r)
     return [m["id"] for m in data.get("data", [])]
+
+
+def needs_key(e: Exception) -> bool:
+    """The server answered, but refused the request for lack of a (valid) API key."""
+    import urllib.error
+    return isinstance(e, urllib.error.HTTPError) and e.code in (401, 403)
+
+
+def probe_error(e: Exception, base_url: str, has_key: bool) -> str:
+    """What went wrong talking to the server, in words: no server is not the same as a server that wants a key."""
+    from .i18n import T
+    if needs_key(e):
+        return (T(f"El servidor {base_url} rechaza la clave de API ({e.code}).", f"The server {base_url} rejects the API key ({e.code}).")
+                if has_key else
+                T(f"El servidor {base_url} pide una clave de API ({e.code}).", f"The server {base_url} requires an API key ({e.code})."))
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        return T(f"El servidor {base_url} responde con error HTTP {e.code}.", f"The server {base_url} answers with HTTP error {e.code}.")
+    return T(f"No hay servidor en {base_url} ({type(e).__name__}).", f"No server at {base_url} ({type(e).__name__}).")
 
 
 def model_meta(base_url: str, model_id: str, timeout: float = 2) -> dict:
