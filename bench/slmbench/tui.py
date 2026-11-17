@@ -586,11 +586,13 @@ class App:
         self.status = ("…", C_DIM)
         self.models_seen: list[str] = []
         self.connected = False
+        self.needs_key = False
         self.meta: dict = {}
 
     # ---- estado del modelo a evaluar ----
     def refresh_status(self):
         self.meta = {}
+        self.needs_key = False
         try:
             self.models_seen = servers.probe(self.s.base_url, self.s.api_key, timeout=1.5)
             self.connected = True
@@ -608,7 +610,10 @@ class App:
         except Exception as e:
             self.models_seen = []
             self.connected = False
-            self.status = (f"○ sin conexión ({type(e).__name__}) · elige el modelo en «Modelo a evaluar»", C_BAD)
+            self.needs_key = servers.needs_key(e)
+            self.status = (("○ " + servers.probe_error(e, self.s.base_url, bool(self.s.api_key)) + " · " +
+                            T("ponla en «Clave de API»", "set it in 'API key'")) if self.needs_key else
+                           f"○ sin conexión ({type(e).__name__}) · elige el modelo en «Modelo a evaluar»", C_BAD)
 
     def current_model(self) -> str:
         return self.s.model or (self.models_seen[0] if self.models_seen else "")
@@ -777,11 +782,11 @@ class App:
                 Field("remote", "B · Conectar a un servidor que ya está en marcha", "action", "llama-server, Ollama, LM Studio, vLLM…"),
                 Field("", "Selección actual", "section"),
                 Field("", "Servidor: ", "info", s.base_url),
+                Field("api_key", "Clave de API (si el servidor la pide)", "text", s.api_key, secret=True,
+                      hint="Se guarda en ~/.config/slmbench/config.json con permisos 600."),
                 Field("pick", "Modelo", "action", self.current_model() + ("" if s.model else "  (el primero del servidor)") if self.current_model() else "— sin conexión —"),
                 Field("label", "Etiqueta de la ejecución (opcional)", "text", s.label,
                       hint="Nombre de la carpeta de resultados y de los informes de este modelo (al cambiar de modelo deja de aplicarse). El leaderboard usa siempre el id del modelo; para comparar variantes, sírvelas con ids distintos (--alias)."),
-                Field("api_key", "Clave de API (si el servidor la pide)", "text", s.api_key, secret=True,
-                      hint="Se guarda en ~/.config/slmbench/config.json con permisos 600."),
                 Field("test", "Probar conexión", "action", ""),
                 Field("", "", "info", self.status[0], hint="" if self.connected else "warn"),
             ]
@@ -810,8 +815,18 @@ class App:
                     s.model = ""
                     config.save(s)
                     self.refresh_status()
+                    while self.needs_key:                 # the server is there but wants a key: ask for it right here
+                        key_in = ui.edit(T("Clave de API", "API key"), s.api_key, secret=True,
+                                         hint=self.status[0].lstrip("○ ") + "  ·  Esc: " + T("cancelar", "cancel"))
+                        if key_in is None:
+                            break
+                        s.api_key = key_in.strip()
+                        config.save(s)
+                        self.refresh_status()
                     if self.connected:
                         self.pick_model()
+                    elif self.needs_key:
+                        ui.message(self.status[0], C_BAD, T("Falta la clave de API", "API key missing"))
                     else:
                         ui.message(f"No responde {s.base_url}.\n¿Está arrancado el servidor y escucha en ese puerto?", C_BAD, "Sin conexión")
             elif key == "pick":
