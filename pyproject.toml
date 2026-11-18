@@ -1,6 +1,6 @@
 [project]
 name = "slmbench"
-version = "0.2.0"
+version = "0.3.0"
 description = "Benchmark small language models (SLMs) on public benchmarks via lighteval, with a TUI; works with any OpenAI-compatible server"
 readme = "README.md"
 license = "MIT"

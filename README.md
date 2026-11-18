@@ -71,7 +71,7 @@ slmbench leaderboard                                           # ranking
 | `all` | Everything above | — |
 
 ```bash
-slmbench setup --mode code        # coding: creates the sandbox (python, node, g++, javac, go, rustc inside it)
+slmbench setup --mode code        # coding: builds the sandbox template (python, node, g++, javac, go, rustc inside it)
 slmbench run --mode code
 slmbench setup --mode tools       # BFCL: downloads the original files and prepares them
 slmbench run --benchmarks humaneval_plus,ifstruct --max-samples 50     # specific benchmarks
@@ -227,14 +227,15 @@ The coding benchmarks run code written by the model you're testing. **slmbench n
 <details>
 <summary><b>The details</b>: the sandbox, browsing and API keys</summary>
 
-> **About `dhi.io` and other domains in `sbx policy ls`:** Docker Sandboxes ships a global default policy that allows about 200 domains (package registries, AI APIs, `dhi.io`: the Docker Hardened Images registry the sandbox images come from) and allows host-path access for sandboxes that mount a workspace. slmbench doesn't add those rules and they don't reach `slmbench-exec`: it adds its own deny-all network rule for that sandbox and mounts no workspace.
+> **About `dhi.io` and other domains in `sbx policy ls`:** Docker Sandboxes ships a global default policy that allows about 200 domains (package registries, AI APIs, `dhi.io`: the Docker Hardened Images registry the sandbox images come from) and allows host-path access for sandboxes that mount a workspace. slmbench doesn't add those rules and they don't reach the `slmbench-run-…` sandboxes: each one is created with its own deny-all network rule and no workspace.
 
 The coding benchmarks run code written by the model you're testing. slmbench never runs it on your machine:
 
-- **Where:** a [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) microVM called `slmbench-exec`, with its own Linux kernel (not a container sharing your kernel), half of your CPU cores and 4 GB of memory.
+- **Where:** a [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) microVM with its own Linux kernel (not a container sharing your kernel), half of your CPU cores and 2 GB of memory (the checks peak at about 0.7 GB).
+- **One per run, deleted at the end:** `setup` builds the sandbox once and saves it as a local template (`slmbench-exec:v2`). Each run creates a new `slmbench-run-…` sandbox from it in a few seconds and deletes it when the run ends, whether it finished, failed or was cancelled. Re-checking answers (`slmbench review`, `e` in the TUI) creates one the same way and deletes it after 2 minutes without checks or when slmbench exits. A sandbox left behind by a process that died is deleted the next time one is created.
 - **No access to your files:** it's created without a host workspace (only `/etc/resolv.conf` is shared, read-only). Each check gets a fresh temporary directory inside the sandbox, deleted afterwards.
-- **No network:** a deny-all rule for this sandbox. During `setup` only the Debian mirror is allowed, while the compilers are installed, and that rule is removed right after.
-- **Unprivileged inside the sandbox too:** the sandbox's default user has `sudo`, so model code never runs as it. Each check runs as one of the users `slmrun0…7`: no sudo, no groups, no home, `no_new_privs` (setuid binaries can't raise it), in a directory only that user can open. It can't write to the system, the tools or the scoring harness, nor read other checks. Limits: 128 MB per file, 512 processes (no fork bombs). When the check ends, every process of that user is killed, also anything left in the background, and its temporary files are deleted. Sandboxes created by an older slmbench are upgraded automatically, without network.
+- **No network:** each sandbox is created with a deny-all rule, so it never has network. During `setup` only the Debian mirror is allowed, while the compilers are installed, and that rule is removed right after.
+- **Unprivileged inside the sandbox too:** the sandbox's default user has `sudo`, so model code never runs as it. Each check runs as one of the users `slmrun0…7`: no sudo, no groups, no home, `no_new_privs` (setuid binaries can't raise it), in a directory only that user can open. It can't write to the system, the tools or the scoring harness, nor read other checks. Limits: 128 MB per file, 512 processes (no fork bombs). When the check ends, every process of that user is killed, also anything left in the background, and its temporary files are deleted. The persistent `slmbench-exec` of an older slmbench is turned into the template by `slmbench setup --mode code` (no reinstall) and removed.
 - **Clean environment:** the code runs with only `PATH`, `HOME`, `LANG` and the Go settings it needs, plus a timeout per step.
 - **Fast:** a persistent worker inside the sandbox receives the checks over one `sbx exec` and runs several at a time (the n answers of a pass@k problem in parallel): 3–6× faster than one `sbx exec` per check.
 - **No fallback:** if the sandbox isn't ready, coding benchmarks don't start. lighteval's own LiveCodeBench tasks (`lcb:*`), which run code on the host, are refused; slmbench's `lcb` is the same benchmark run in the sandbox.

@@ -272,9 +272,27 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
 
     on_line("$ " + " ".join(cmd))
     env = dict(os.environ, TOKENIZERS_PARALLELISM="false", PYTHONUNBUFFERED="1", NO_COLOR="1", **menv)
-    # own session/process group: cancelling stops lighteval and everything it started (stop_process)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, cwd=str(out), bufsize=1,
-                         start_new_session=True)
+    box = None                                 # coding benchmarks: a sandbox of their own, deleted when lighteval exits
+    if code_names(specs):
+        from . import sandbox
+        try:
+            box = sandbox.create()
+        except RuntimeError as e:
+            log.close()
+            raise RuntimeError(T(f"No se pudo crear el sandbox: {e}", f"Could not create the sandbox: {e}")) from e
+        env[sandbox.ENV_NAME] = box
+        on_line(T(f"Sandbox {box} creado (se elimina al terminar)", f"Sandbox {box} created (removed when the run ends)"))
+    try:
+        # own session/process group: cancelling stops lighteval and everything it started (stop_process)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, cwd=str(out), bufsize=1,
+                             start_new_session=True)
+    except BaseException:
+        if box:
+            sandbox.destroy(box)
+        log.close()
+        raise
+    if box:
+        sandbox.claim(box, p.pid)              # not pruned by another slmbench while lighteval still runs
     active = _active_dir() / f"{p.pid}.json"
     active.write_text(json.dumps({"pid": p.pid, "model": model, "label": label, "specs": specs, "stats": str(stats), "out": str(out),
                                   "total": _expected_requests(specs, s.ld_max_samples, s.passk_n), "started": time.time(),
@@ -334,6 +352,9 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
             active.unlink()
         except OSError:
             pass
+        if box:
+            sandbox.destroy(box)
+            on_line(T(f"Sandbox {box} eliminado", f"Sandbox {box} removed"))
         log.close()
     meta = {"model": model, "base_url": s.base_url, "specs": specs, "max_samples": s.ld_max_samples,
             "date": dt.datetime.now().isoformat(timespec="seconds"), "label": label, "lighteval": installed_version(),
@@ -666,6 +687,11 @@ def compare(dirs: list[str]) -> str:
 # ---------------------------------------------------------------------------------------------
 # Preparación por modo
 # ---------------------------------------------------------------------------------------------
+def code_names(specs: list[str]) -> list[str]:
+    """Names of the benchmarks among `specs` that execute model code (they need a sandbox)."""
+    return [cat.catalog()[k]["name"] for k in (cat.spec_to_key(sp) for sp in specs) if k and cat.catalog()[k]["mode"] == "code"]
+
+
 def check_safe(specs: list[str]) -> None:
     """Model-generated code only ever runs inside the slmbench sandbox. Refuses (RuntimeError) to start a run that would
     execute code without it: coding benchmarks while the sandbox isn't ready, or lighteval's own LiveCodeBench tasks
@@ -677,7 +703,7 @@ def check_safe(specs: list[str]) -> None:
                              "Usa el benchmark `lcb` de slmbench, que es el mismo pero en el sandbox.",
                              f"{', '.join(host_exec)}: lighteval's LiveCodeBench runs the model's code on your machine. "
                              "Use slmbench's `lcb` benchmark: the same benchmark, run in the sandbox."))
-    code = [cat.catalog()[k]["name"] for k in (cat.spec_to_key(sp) for sp in specs) if k and cat.catalog()[k]["mode"] == "code"]
+    code = code_names(specs)
     if code:
         why = sandbox.status(refresh=True)
         if why:
