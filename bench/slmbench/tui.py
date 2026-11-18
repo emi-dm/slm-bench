@@ -910,7 +910,10 @@ class App:
             info = f"v{__version__}  ·  " + T("modelos pequeños · benchmarks públicos · basado en lighteval",
                                                 "small models · public benchmarks · built on lighteval")
             center = lambda text_w: max(2, (w - text_w) // 2)
-            if h >= 36 and w >= art.wordmark_width(scale=2) + 4:                 # wordmark 2x + bars + tagline
+            # the wordmark only where everything else still fits: panel (7) + server line + the menu + help and footer (3)
+            below = 7 + 1 + 1 + len(items) + 3
+            big_h, small_h = len(art.wordmark(scale=2)) + 7, len(art.wordmark()) + 4
+            if 2 + big_h + below <= h and w >= art.wordmark_width(scale=2) + 4:      # wordmark 2x + bars + tagline
                 ww = art.wordmark_width(scale=2)
                 x = center(ww)
                 rows = ui.draw_wordmark(y + 1, x, scale=2)
@@ -919,7 +922,7 @@ class App:
                 ui.put(y + rows + 4, center(len(info)), info, curses.color_pair(C_DIM))
                 ui.put(y + rows + 5, center(len(quip)), quip, curses.color_pair(C_MAG) | _italic())
                 y += rows + 7
-            elif h >= 30 and w >= art.wordmark_width() + 4:                     # wordmark 1x + bars
+            elif 2 + small_h + below <= h and w >= art.wordmark_width() + 4:     # wordmark 1x + bars
                 ww = art.wordmark_width()
                 x = center(ww)
                 rows = ui.draw_wordmark(y, x)
@@ -1397,7 +1400,10 @@ class App:
                                     "Try org/repo, org/repo-GGUF:Q4_K_M or a path to a .gguf (m)."), ui.color(ui.MUTED) | _italic())
             elif r.get("files"):
                 sel, top = self._memory_files(r, ram, x0, W, sel, top)
+                cy_list = 8 + min(len(r["files"]), h - 12)
             cy = h - 4
+            if r and r.get("files"):
+                cy = min(h - 4, cy_list)
             if r and not r.get("error") and not r.get("files"):
                 cy = min(h - 4, self._memory_single(r, ram, x0, W) + 1)
             # context selector (shared by both views)
@@ -1732,15 +1738,21 @@ class App:
                     if sp.split("|")[0] in t.split("|"):
                         counts[sp] = counts.get(sp, 0) + 1
                         break
+            names = {sp: (cat.catalog().get(cat.spec_to_key(sp) or "", {}).get("name") or sp.split("|")[0]) for sp in per}
+            nw = max([len(v) for v in names.values()] + [12])
             for i, (sp, n) in enumerate(per.items()):
                 if y + 1 + i >= h - 8:
                     break
                 c = counts.get(sp, 0) if any(r.get("task") for r in rows) or not rows else "?"
-                key = cat.spec_to_key(sp) or sp
                 full = isinstance(c, int) and bool(n) and c >= n
-                mark = "+" if full else (">" if isinstance(c, int) and c else "-")
-                style = curses.color_pair(C_OK) if full else (curses.color_pair(C_WARN) | curses.A_BOLD if mark == ">" else curses.color_pair(C_DIM))
-                ui.put(y + 1 + i, 4, f"{mark} {key:<16} {c}/{n if n else '?'}", style)
+                going = isinstance(c, int) and c and not full
+                mark = "✔" if full else ("▸" if going else "·")
+                style = curses.color_pair(C_OK) if full else (curses.color_pair(C_WARN) | curses.A_BOLD if going else curses.color_pair(C_DIM))
+                yy = y + 1 + i
+                ui.put(yy, 4, f"{mark} {names[sp]:<{nw}}", style)
+                if isinstance(c, int) and n:
+                    ui.progress(yy, 7 + nw, 20, c / n)
+                ui.put(yy, 29 + nw, f"{c}/{n if n else '?'}", style)
             y += 2 + min(len(per), max(0, h - 10 - y))
             # últimas respuestas o log
             room = h - y - 2
@@ -1759,12 +1771,13 @@ class App:
                 for i, r in enumerate(list(reversed(rows))[: max(0, room - 1)]):
                     t = str(r.get("task") or "?").split("|")
                     tname = next((p for p in t if p and p != "custom" and not p.isdigit()), "?")
+                    tname = cat.catalog().get(cat.spec_to_key(tname + "|0") or tname, {}).get("name") or tname
                     if "error" in r:
-                        txt, st = f"{tname[:14]:<14} ERR   {r['error']}", curses.color_pair(C_BAD)
+                        txt, st = f"{tname[:22]:<22} ERR   {r['error']}", curses.color_pair(C_BAD)
                     else:
                         # marcas ASCII: los símbolos (✓ ✂ ∅) tienen anchura ambigua y dejan restos en algunos terminales
                         flag = T("vacía", "empty") if r.get("empty") else (T("cortada", "cut") if r.get("finish") == "length" else "ok")
-                        txt = f"{tname[:14]:<14} {flag:<7}{r.get('ct') or 0:>5} tok {r.get('t') or 0:>6.1f}s  {r.get('out', '')}"
+                        txt = f"{tname[:22]:<22} {flag:<7}{r.get('ct') or 0:>5} tok {r.get('t') or 0:>6.1f}s  {r.get('out', '')}"
                         st = curses.color_pair(C_WARN) if flag != "ok" else 0
                     ui.put(y + 1 + i, 2, txt[: w - 4], st)
             ui.footer(T("l log/respuestas · ←→ otra ejecución · x cancelar · q volver", "l log/answers · ←→ other run · x cancel · q back"))
@@ -2111,14 +2124,11 @@ class App:
         """Failure explorer: benchmarks of a run -> its problems (failed ones first) -> prompt, answers and why they failed."""
         from . import review
         ui = self.ui
-        ui.scr.erase()
-        ui.header(T("Respuestas", "Answers"), Path(run_dir).name)
-        ui.put(3, 2, T("Leyendo las respuestas…", "Reading the answers…"), curses.color_pair(C_DIM))
-        ui.scr.refresh()
-        try:
-            tasks = review.load(run_dir)
-        except Exception as e:                                       # noqa: BLE001
-            ui.message(f"{type(e).__name__}: {e}", C_BAD)
+        tasks, err = self.busy(T("Respuestas", "Answers"), T("Leyendo las respuestas…", "Reading the answers…"),
+                               lambda: review.load(run_dir))
+        if err:
+            if str(err) != T("cancelado", "cancelled"):
+                ui.message(f"{type(err).__name__}: {err}", C_BAD)
             return
         if not tasks:
             ui.message(T("Esta ejecución no tiene detalles por problema.", "This run has no per-problem details."), C_WARN)
@@ -2160,12 +2170,14 @@ class App:
                 only_bad, sel = not only_bad, 0
                 continue
             smp = shown[i - 1]
-            ui.scr.erase()
-            ui.header(task["name"], T("Comprobando las respuestas…", "Checking the answers…"))
-            ui.put(3, 2, T("Volviendo a comprobar cada respuesta (el código se ejecuta en el sandbox)…",
-                           "Re-checking every answer (code runs in the sandbox)…"), curses.color_pair(C_DIM))
-            ui.scr.refresh()
-            ui.md_pager(f"{task['name']} · #{smp['index']}", review.sample_markdown(task, smp))
+            md, err = self.busy(task["name"], T("Volviendo a comprobar cada respuesta (el código se ejecuta en el sandbox)…",
+                                                "Re-checking every answer (code runs in the sandbox)…"),
+                                lambda: review.sample_markdown(task, smp))
+            if err:
+                if str(err) != T("cancelado", "cancelled"):
+                    ui.message(f"{type(err).__name__}: {err}", C_BAD)
+                continue
+            ui.md_pager(f"{task['name']} · #{smp['index']}", md)
 
     def _run_in_terminal(self, cmd: list[str], title: str):
         """Hands the terminal to an interactive program (curses suspended) and restores the TUI afterwards."""
