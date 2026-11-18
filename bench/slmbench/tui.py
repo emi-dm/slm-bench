@@ -1139,8 +1139,6 @@ class App:
             choices = [(m["path"], f"{m['name']}  ({servers.human(m['size'])})") for m in found]
             if s.srv_model and s.srv_model not in [c[0] for c in choices]:
                 choices.insert(0, (s.srv_model, os.path.basename(s.srv_model)))
-            if not s.srv_model and choices:
-                s.srv_model = choices[0][0]
             binary = servers.find_binary()
             fields = [
                 Field("", "Estado", "section"),
@@ -1152,8 +1150,9 @@ class App:
             ]
             if s.srv_source == "file":
                 if choices:
-                    cur = dict(choices).get(s.srv_model, os.path.basename(s.srv_model))
-                    fields.append(Field("pick_gguf", "Fichero GGUF", "action", cur, hint=f"{len(choices)} modelos encontrados · Enter para elegir · {s.srv_model}"))
+                    cur = dict(choices).get(s.srv_model, os.path.basename(s.srv_model)) if s.srv_model else T("— ninguno: pulsa Enter para elegir —", "— none: press Enter to pick —")
+                    fields.append(Field("pick_gguf", "Fichero GGUF", "action", cur,
+                                        hint=T(f"{len(choices)} modelos encontrados · Enter para elegir", f"{len(choices)} models found · Enter to pick") + (f" · {s.srv_model}" if s.srv_model else "")))
                 else:
                     searched = [str(r) for r in servers.model_roots(s.model_dirs) if r.is_dir()]
                     fields.append(Field("", T("No se encontró ningún .gguf. Añade una carpeta con «Añadir carpeta de modelos».",
@@ -1222,8 +1221,6 @@ class App:
                                      on_change=on_change, tick=mem_tick, sub="Elige el .gguf, ajusta los argumentos y pulsa «Arrancar servidor»: quedará como modelo a evaluar")
             sync(fields, s)
             if state.pop("rebuild", False):
-                if s.srv_source == "file" and not s.srv_model and choices:
-                    s.srv_model = choices[0][0]
                 config.save(s)
                 continue
             if s.srv_ngl not in ("all", "auto", "0") and not str(s.srv_ngl).isdigit():
@@ -2287,8 +2284,8 @@ class App:
                     pct = f"{v * 100:.0f}%"
                     ui.put(y, x, pct, ui.color(78 if v >= 0.7 else 220 if v >= 0.4 else 203, bg, True))
                     x += len(pct) + 2
-            ui.footer(T("↑↓ mover · Enter informe · e respuestas · l errores/log · r repuntuar · u reanudar · Espacio marcar · c comparar · d borrar · q volver",
-                        "↑↓ move · Enter report · e answers · l errors/log · r rescore · u resume · Space mark · c compare · d delete · q back"))
+            ui.footer(T("↑↓ mover · Enter informe · e respuestas · l errores/log · r repuntuar · u reanudar · Espacio marcar · c comparar · d borrar (marcadas) · q volver",
+                        "↑↓ move · Enter report · e answers · l errors/log · r rescore · u resume · Space mark · c compare · d delete (marked) · q back"))
             ui.scr.refresh()
             k = ui.key(1000)
             if k in (curses.KEY_DOWN, "j"):
@@ -2337,11 +2334,14 @@ class App:
                 else:
                     ui.md_pager(T("Comparación", "Comparison"), engine.compare(dirs))
             elif k in ("d", "D"):
-                d = runs[sel]["dir"]
-                if ui.confirm(T(f"¿Borrar {Path(d).name}?", f"Delete {Path(d).name}?")):
+                dirs = [r["dir"] for r in runs if r["dir"] in marked] or [runs[sel]["dir"]]   # the marked runs, else the one under the cursor
+                q = (T(f"¿Borrar {Path(dirs[0]).name}?", f"Delete {Path(dirs[0]).name}?") if len(dirs) == 1 else
+                     T(f"¿Borrar las {len(dirs)} ejecuciones marcadas?", f"Delete the {len(dirs)} marked runs?"))
+                if ui.confirm(q):
                     import shutil
-                    shutil.rmtree(d, ignore_errors=True)
-                    marked.discard(d)
+                    for d in dirs:
+                        shutil.rmtree(d, ignore_errors=True)
+                    marked.difference_update(dirs)
                     listed = 0.0
 
 
