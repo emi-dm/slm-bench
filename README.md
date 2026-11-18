@@ -35,6 +35,7 @@
 - **Saved answers**: every answer is stored with the run, so a run can be **rescored** without calling the model (e.g. after a scorer fix) and an interrupted run can be **resumed**, asking the model only for what's missing.
 - **Failure explorer**: for every problem, what the model answered and *why* it failed (compile error, wrong value, timeout, missing tool call, truncated answer…).
 - **Errors and log** (`l` in Results, or `slmbench log`): failed requests grouped by the server's message with hints (API key, rate limit, context too long…), parameters adapted to a provider, sandbox warnings, tracebacks and the end of the log.
+- **Memory estimates** with [hf-mem](https://github.com/alvarobartt/hf-mem): weights + KV cache + overhead of any Hugging Face repo or local GGUF, without downloading it, and whether it fits on your machine.
 - **Live view** of any running evaluation (progress, ETA, tokens/s, the model's latest answers, lighteval's log), even if it was started from another terminal.
 - **Leaderboard per model and quantization** (Q4_K_M vs Q8_0 of the same model are separate rows), as Markdown, SVG and an interactive HTML page.
 - **Reasoning-aware**: configurable reasoning budget, and empty or truncated answers are counted and reported.
@@ -124,6 +125,8 @@ With a hosted API, slmbench sends only standard OpenAI parameters (the reasoning
 
 Each leaderboard row is **model + quantization** (taken from llama-server or from the model id), so you can evaluate the same model in Q4_K_M, Q8_0… and compare them.
 
+**Will it fit?** slmbench estimates how much memory a model needs with [hf-mem](https://github.com/alvarobartt/hf-mem): weights + KV cache for your context + runtime overhead, read from the Safetensors / GGUF metadata without downloading the weights. The *Local model* screen shows it live for the selected `.gguf` or `org/repo:quant` and the context (`-c`) you set, next to this machine's memory; *Model to evaluate → Estimate a model's memory* and `slmbench mem` work for any Hugging Face repo (every GGUF quant of a repo in one table) or local file.
+
 ## Built on lighteval
 
 lighteval provides **the tasks and the metrics**; slmbench provides **the model client, the interface and the results**:
@@ -170,6 +173,7 @@ slmbench review <run> [--task KEY] [--sample N] [--all]   # what the model answe
 slmbench log <run>                         # a run's errors: failed requests grouped by message, warnings, tracebacks
 slmbench benchmarks [key]                  # catalog, or one benchmark's card with a sample task
 slmbench models | use <model> --base-url URL
+slmbench mem <org/repo[:quant] | model.gguf> [--ctx N] [--json]   # estimated memory (hf-mem), without downloading
 slmbench chat [model.gguf | org/repo:quant] [--system TEXT]   # chat with a local GGUF via llama cli
 slmbench results | compare <dir> <dir>
 slmbench leaderboard [open]

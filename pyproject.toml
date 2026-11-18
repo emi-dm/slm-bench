@@ -36,6 +36,7 @@ dependencies = [
     # that uv takes it from the CPU-only index on Linux (see [tool.uv.sources]): ~200 MB instead of several GB of NVIDIA
     # libraries.
     "torch>=2.0,<3.0",
+    "hf-mem>=1.0",
 ]
 
 [project.urls]

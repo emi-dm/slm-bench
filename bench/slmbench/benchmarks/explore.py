@@ -69,7 +69,25 @@ def _short(text: str, n: int = 1600) -> str:
 
 
 def sample(key: str) -> dict:
-    """{system, prompt, reference} de la primera tarea del benchmark."""
+    """{system, prompt, reference} de la primera tarea del benchmark. Cached on disk with the slmbench version: building it
+    needs lighteval's task registry, and importing lighteval alone takes several seconds."""
+    from .. import __version__
+    f = _cache_dir() / f"{key}.prompt.json"
+    try:
+        hit = json.loads(f.read_text())
+        if hit.get("version") == __version__:
+            return hit["sample"]
+    except (OSError, ValueError, KeyError):
+        pass
+    out = _sample(key)
+    try:
+        f.write_text(json.dumps({"version": __version__, "sample": out}, ensure_ascii=False))
+    except OSError:
+        pass
+    return out
+
+
+def _sample(key: str) -> dict:
     cfg = task_config(key)
     row = sample_row(key)
     if row is None:

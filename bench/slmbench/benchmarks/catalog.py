@@ -148,6 +148,7 @@ def spec_to_key(spec: str) -> str | None:
 
 
 _sbx_missing: dict[str, list[str]] = {}
+_sbx_lock = __import__("threading").Lock()       # the TUI checks the sandbox in the background at start-up: one check at a time
 
 
 def missing_tools(key: str) -> list[str]:
@@ -161,6 +162,11 @@ def missing_tools(key: str) -> list[str]:
     if v.get("mode") != "code":
         return []
     from .. import sandbox
+    with _sbx_lock:
+        return _missing_in_sandbox(key, req, sandbox)
+
+
+def _missing_in_sandbox(key: str, req: list, sandbox) -> list[str]:
     why = sandbox.status()
     if why:
         return [f"sandbox ({why})"]

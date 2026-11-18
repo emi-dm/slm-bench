@@ -252,6 +252,18 @@ def cmd_models(args):
     print("\n" + T("Para elegir uno: slmbench use <modelo> [--base-url URL]", "To pick one: slmbench use <model> [--base-url URL]"))
 
 
+def cmd_mem(args):
+    from . import memory
+    try:
+        d = memory.estimate(args.model, ctx=args.ctx, parallel=args.parallel)
+    except RuntimeError as e:
+        sys.exit(f"hf-mem: {e}")
+    if args.json:
+        print(json.dumps(d, indent=2))
+    else:
+        print(memory.markdown(d, args.model, args.ctx))
+
+
 def cmd_use(args):
     s = config.load()
     _apply(s, args, [("base_url", "base_url"), ("model", "model"), ("label", "label"), ("api_key", "api_key")])
@@ -418,6 +430,15 @@ def main():
     mo = sub.add_parser("models", help=T("modelos del servidor configurado", "models on the configured server"))
     mo.add_argument("--base-url")
     mo.set_defaults(fn=cmd_models)
+    me = sub.add_parser("mem", help=T("estimar la memoria de un modelo con hf-mem (pesos + KV cache + overhead), sin descargarlo",
+                                      "estimate a model's memory with hf-mem (weights + KV cache + overhead), without downloading it"))
+    me.add_argument("model", help=T("org/repo, org/repo:Q4_K_M (GGUF) o ruta a un .gguf / carpeta local",
+                                    "org/repo, org/repo:Q4_K_M (GGUF) or a path to a .gguf / local folder"))
+    me.add_argument("--ctx", type=int, help=T("contexto en tokens para la KV cache (por defecto, el máximo del modelo)",
+                                              "context in tokens for the KV cache (default: the model's maximum)"))
+    me.add_argument("--parallel", type=int, default=1, help=T("secuencias concurrentes", "concurrent sequences"))
+    me.add_argument("--json", action="store_true", help=T("la salida JSON de hf-mem", "hf-mem's JSON output"))
+    me.set_defaults(fn=cmd_mem)
 
     u = sub.add_parser("use", help=T("fijar el modelo a evaluar", "set the model to evaluate"))
     u.add_argument("model", nargs="?")
