@@ -1372,12 +1372,18 @@ class App:
         if ctx not in ctxs:
             ctxs = sorted([c for c in ctxs if c] + [ctx]) if ctx else ctxs
             ctxs = [None] + [c for c in ctxs if c]
+        shown = None                                   # the last estimate drawn: kept on screen while a new context loads
         while True:
             r = memory.estimate_async(target, ctx=ctx, file=file, fallbacks=fallbacks)
             if r and r.get("_target") and r["_target"] != target:      # a fallback answered: show what was measured
                 target, fallbacks = r["_target"], ()
                 name = target
                 continue
+            loading = r is None
+            if loading and shown is not None and shown[0] == (target, file):
+                r = shown[1]
+            elif r is not None and not r.get("error"):
+                shown = ((target, file), r)
             h, w = ui.size()
             ui.scr.erase()
             ui.header(T("Memoria del modelo", "Model memory") + " · hf-mem")
@@ -1416,11 +1422,14 @@ class App:
             ui.put(cy, cx, "‹ ", ui.color(ui.MUTED))
             ui.put(cy, cx + 2, cur, curses.color_pair(C_ACC) | curses.A_BOLD)
             ui.put(cy, cx + 2 + len(cur), " ›", ui.color(ui.MUTED))
+            if loading and r is not None:
+                ui.put(cy, cx + 6 + len(cur), SPIN[int(time.time() * 8) % len(SPIN)] + T(" recalculando…", " recalculating…"),
+                       curses.color_pair(C_ACC))
             listing = bool(r and r.get("files"))
             ui.footer(T("←→ contexto · " + ("↑↓ elegir · Enter detalle · " if listing else "") + "m otro modelo · t tabla · q volver",
                         "←→ context · " + ("↑↓ pick · Enter details · " if listing else "") + "m other model · t table · q back"))
             ui.scr.refresh()
-            k = ui.key(120 if r is None else -1)
+            k = ui.key(120 if loading else -1)
             if k in ("q", "Q", KEY_ESC):
                 return
             if k in (curses.KEY_LEFT, curses.KEY_RIGHT):

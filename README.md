@@ -8,8 +8,8 @@
 </p>
 
 <p align="center">
-  <img src="assets/demo.gif" alt="slmbench demo: pick the tool-calling mode, run it with live progress, read the report, explore a failure and check the leaderboard" width="820"><br>
-  <sub>A real run, about a minute long: tool calling (BFCL) on LFM3-1.7B with llama-server. <a href="assets/demo.mp4">Watch it as MP4</a> (sharper).</sub>
+  <img src="assets/demo.gif" alt="slmbench demo: check the model's memory with hf-mem, run the tool-calling mode with live progress, read the report, explore a failure and check the leaderboard" width="820"><br>
+  <sub>A real session: LFM3-1.7B (Q8_0) on llama-server. Its memory with hf-mem, then tool calling (BFCL), the report, a failure and the leaderboard. <a href="assets/demo.mp4">Watch it as MP4</a> (sharper).</sub>
 </p>
 
 **slmbench** measures what **small language models** (≈ 1–14B parameters) can really do on your machine:
