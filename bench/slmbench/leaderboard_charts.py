@@ -3,6 +3,7 @@ and a score-vs-speed scatter. Plain inline SVG (no JS library); colors come from
 mode's color), so they follow the light/dark theme. One series per chart, so no legend: the title names it."""
 from __future__ import annotations
 
+import json
 from html import escape
 
 
@@ -16,7 +17,12 @@ def _label(e: dict) -> str:
     return _short(e["name"]) + (f" {q}" if q else "")
 
 
-def bars(rows: list[tuple[dict, dict]], title: str) -> str:
+def _tip(tip, e: dict) -> str:
+    """data-tip attribute: the stats the page's tooltip shows for this model (JSON)."""
+    return f' data-tip="{escape(json.dumps(tip(e), ensure_ascii=False), quote=True)}" tabindex="0"' if tip else ""
+
+
+def bars(rows: list[tuple[dict, dict]], title: str, tip=None) -> str:
     """Score per model, best first. Rows that aren't comparable (missing benchmarks, sample runs) are drawn faded."""
     rows = [(e, sc) for e, sc in rows if sc["score"] is not None][:16]
     if not rows:
@@ -43,7 +49,7 @@ def bars(rows: list[tuple[dict, dict]], title: str) -> str:
         # rounded data-end, square at the baseline
         path = (f"M{x:.1f},{top + ph:.1f} V{y + r:.1f} Q{x:.1f},{y:.1f} {x + r:.1f},{y:.1f} H{x + bw - r:.1f} "
                 f"Q{x + bw:.1f},{y:.1f} {x + bw:.1f},{y + r:.1f} V{top + ph:.1f} Z")
-        o.append(f'<g class="hit"><title>{escape(e["name"])} {escape(e["meta"].get("quant", ""))}: {v * 100:.1f}{escape(note)}</title>'
+        o.append(f'<g class="hit"{_tip(tip, e)} aria-label="{escape(e["name"])} {escape(e["meta"].get("quant", ""))}: {v * 100:.1f}{escape(note)}">'
                  f'<rect x="{left + slot * i:.1f}" y="{top}" width="{slot:.1f}" height="{ph}" class="hitbox"/>'
                  f'<path d="{path}" class="{cls}"/>'
                  f'<text x="{x + bw / 2:.1f}" y="{y - 7:.1f}" class="val" text-anchor="middle">{v * 100:.1f}</text>'
@@ -53,7 +59,7 @@ def bars(rows: list[tuple[dict, dict]], title: str) -> str:
     return "".join(o)
 
 
-def scatter(rows: list[tuple[dict, dict]], speed_of, title: str) -> str:
+def scatter(rows: list[tuple[dict, dict]], speed_of, title: str, tip=None) -> str:
     """Score (y) against generation speed (x): top right is better and faster. Needs at least two models with a speed."""
     pts = []
     for e, sc in rows:
@@ -112,8 +118,8 @@ def scatter(rows: list[tuple[dict, dict]], speed_of, title: str) -> str:
                         break
                 if lab:
                     break
-        o.append(f'<g class="hit"><title>{escape(e["name"])} {escape(e["meta"].get("quant", ""))}: score {s * 100:.1f}, '
-                 f'{tps:g} tokens/s</title><circle cx="{x:.1f}" cy="{y:.1f}" r="14" class="hitbox"/>'
+        o.append(f'<g class="hit"{_tip(tip, e)} aria-label="{escape(e["name"])} {escape(e["meta"].get("quant", ""))}: score {s * 100:.1f}, '
+                 f'{tps:g} tokens/s"><circle cx="{x:.1f}" cy="{y:.1f}" r="14" class="hitbox"/>'
                  f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" class="{cls}"/>{lab}</g>')
     o.append("</svg>")
     return "".join(o)
@@ -137,6 +143,10 @@ svg.chart .dot.faded{fill:color-mix(in srgb,var(--hue) 35%,var(--paper));stroke:
 svg.chart .quad{fill:color-mix(in srgb,var(--hue) 9%,transparent)}
 svg.chart .quadlabel{fill:var(--mut);font:600 11px var(--body)}
 svg.chart .hitbox{fill:transparent}
-svg.chart .hit:hover .bar,svg.chart .hit:hover .dot{filter:brightness(1.12)}
-svg.chart .hit:hover .name{font-weight:700}
+svg.chart .hit{cursor:pointer;outline:none}
+svg.chart .bar,svg.chart .dot{transition:filter .15s,opacity .15s}
+svg.chart:has(.hit:hover) .hit:not(:hover) .bar,svg.chart:has(.hit:hover) .hit:not(:hover) .dot{opacity:.45}
+svg.chart .hit:hover .bar,svg.chart .hit:hover .dot,svg.chart .hit:focus .bar,svg.chart .hit:focus .dot{filter:brightness(1.12)}
+svg.chart .hit:hover .dot,svg.chart .hit:focus .dot{r:8}
+svg.chart .hit:hover .name,svg.chart .hit:focus .name{font-weight:700}
 """

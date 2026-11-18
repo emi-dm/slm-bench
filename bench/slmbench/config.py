@@ -41,9 +41,9 @@ class Settings:
     ld_max_new_tokens: int = 2048        # máx. de tokens por respuesta (razonamiento incluido)
     reasoning_budget: int = 1024         # tokens de razonamiento por respuesta: -1 = sin límite, 0 = sin razonar, N = tope (thinking_budget_tokens).
                                          # Con 2048 de máximo deja ≈1024 para la respuesta; los modelos que no razonan lo ignoran
-    temperature: float = 0.0
-    passk_n: int = 5                     # benchmarks de programación: respuestas por problema para pass@1 y pass@5 (1 = solo pass@1, voraz)
-    passk_temperature: float = 0.6       # temperatura de esas respuestas (con n > 1 hay que muestrear; con n = 1 se usa `temperature`)
+    temperature: float = 0.8             # la misma para una respuesta y para las n de pass@k
+    passk_n: int = 5                     # programación y herramientas: respuestas por problema para pass@1 y pass@5 (1 = solo pass@1),
+                                         # todas a `temperature`, la misma que con una sola respuesta
     workers: int = 1                     # peticiones simultáneas (≤ slots -np del servidor)
     timeout: float = 600
     max_context: int = 32768

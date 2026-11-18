@@ -147,7 +147,7 @@ def model_env(s: Settings, model: str, stats: Path | None = None) -> dict:
         "SLMBENCH_LD_CONCURRENCY": str(max(1, s.workers)), "SLMBENCH_LD_TIMEOUT": str(int(s.timeout)),
         "SLMBENCH_LD_MAX_CONTEXT": str(s.max_context), "SLMBENCH_LD_EXTRA_BODY": s.extra_body or "",
         "SLMBENCH_LD_REASONING_BUDGET": str(s.reasoning_budget), "SLMBENCH_LD_STATS": str(stats or ""),
-        "SLMBENCH_PASSK_N": str(max(1, s.passk_n)), "SLMBENCH_LD_SAMPLE_TEMPERATURE": str(s.passk_temperature),
+        "SLMBENCH_PASSK_N": str(max(1, s.passk_n)),
         # mínimo de tokens por tarea (p. ej. LiveCodeBench necesita más que el valor global): {nombre de tarea: tokens}
         "SLMBENCH_LD_TASK_MIN_TOKENS": json.dumps({v["spec"].split("|")[0]: v["min_tokens"] for v in cat.catalog().values() if v.get("min_tokens")}),
     }
@@ -359,7 +359,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
     meta = {"model": model, "base_url": s.base_url, "specs": specs, "max_samples": s.ld_max_samples,
             "date": dt.datetime.now().isoformat(timespec="seconds"), "label": label, "lighteval": installed_version(),
             "temperature": s.temperature, "reasoning_budget": s.reasoning_budget, "max_new_tokens": s.ld_max_new_tokens or 2048,
-            "passk_n": max(1, s.passk_n), "passk_temperature": s.passk_temperature,
+            "passk_n": max(1, s.passk_n),
             "returncode": rc, "cancelled": cancelled, "api_errors": len(api_errors), "api_error_examples": api_errors[:3],
             "api_notes": api_notes, "server_kind": menv.get("SLMBENCH_LD_SERVER_KIND"),
             "kind": kind or "run", "origin": origin, "server": served or server or {}, "custom_label": custom_label,
@@ -482,9 +482,10 @@ def report(meta: dict, summary: dict) -> str:
          f"{T('razonamiento', 'reasoning')}: {budget}"]
     if any((cat.spec_to_key(t) and c[cat.spec_to_key(t)].get("passk")) for t in summary):
         n = meta.get("passk_n", 1)
-        L.append("- pass@k: " + (T(f"{n} respuestas por problema (programación y herramientas) a temperatura {meta.get('passk_temperature')} "
+        temp = meta.get("passk_temperature", meta.get("temperature"))          # older runs sampled pass@k at their own temperature
+        L.append("- pass@k: " + (T(f"{n} respuestas por problema (programación y herramientas) a temperatura {temp} "
                                     "(pass@1 y pass@5 con el estimador insesgado de Chen et al. 2021)",
-                                    f"{n} answers per problem (coding and tool calling) at temperature {meta.get('passk_temperature')} "
+                                    f"{n} answers per problem (coding and tool calling) at temperature {temp} "
                                     "(pass@1 and pass@5 with the unbiased estimator of Chen et al. 2021)") if n > 1 else
                                   T("1 respuesta por problema (solo pass@1)", "1 answer per problem (pass@1 only)")))
     if meta.get("requests"):

@@ -77,9 +77,11 @@ class SlmbenchOpenAIModel(LightevalModel):
         self.base_url = _env("BASE_URL", "http://127.0.0.1:8080/v1").rstrip("/")
         self.model = _env("MODEL") or config.model_name
         self.api_key = _env("API_KEY")
-        self.temperature = float(_env("TEMPERATURE", "0") or 0)
-        # varias respuestas por problema (pass@k): hay que muestrear, así que se usa esta temperatura
-        self.sample_temperature = float(_env("SAMPLE_TEMPERATURE", "0.6") or 0.6)
+        self.temperature = float(_env("TEMPERATURE", "0.8") or 0)
+        # pass@k: las n respuestas usan la misma temperatura que una sola. SAMPLE_TEMPERATURE solo llega al reanudar una ejecución
+        # antigua, que muestreaba a otra temperatura (así sus respuestas guardadas conservan la misma clave)
+        st = _env("SAMPLE_TEMPERATURE")
+        self.sample_temperature = float(st) if st else self.temperature
         self.max_tokens = int(_env("MAX_TOKENS", "0") or 0)
         try:                                                  # mínimo por tarea, p. ej. {"livecodebench": 8192}
             self.task_min_tokens = {k: int(v) for k, v in json.loads(_env("TASK_MIN_TOKENS", "{}") or "{}").items()}
@@ -264,7 +266,7 @@ class SlmbenchOpenAIModel(LightevalModel):
     def _generate(self, args):
         """Una respuesta: (mensajes, máx. tokens, stop, tarea, índice de la muestra, nº de muestras del problema)."""
         messages, max_tokens, stop, task, i, n, tools = args
-        temp = self.sample_temperature if n > 1 else self.temperature   # n > 1: muestreo; n = 1: la temperatura configurada
+        temp = self.sample_temperature if n > 1 else self.temperature   # iguales salvo al reanudar una ejecución antigua
         key = self.request_key(messages, max_tokens, stop, i, temp, tools)
         base = {"key": key, "problem": self.problem_key(messages), "task": task, "i": i, "n": n}
         old = self.replay.get(key)

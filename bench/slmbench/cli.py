@@ -126,7 +126,7 @@ def cmd_run(args):
     _apply(s, args, [("base_url", "base_url"), ("model", "model"), ("api_key", "api_key"), ("temperature", "temperature"),
                      ("ld_max_samples", "max_samples"), ("ld_max_new_tokens", "max_tokens"), ("reasoning_budget", "reasoning_budget"),
                      ("workers", "workers"), ("timeout", "timeout"), ("label", "label"), ("out_dir", "out"),
-                     ("passk_n", "passk_n"), ("passk_temperature", "passk_temperature")])
+                     ("passk_n", "passk_n")])
     if args.no_leaderboard:
         s.leaderboard_auto = False
     if getattr(args, "label", None):
@@ -398,11 +398,11 @@ def main():
     r.add_argument("--max-samples", type=int, help=T("muestras por benchmark (0 = completo)", "samples per benchmark (0 = full)"))
     r.add_argument("--max-tokens", type=int, help=T("máx. tokens por respuesta", "max tokens per answer"))
     r.add_argument("--reasoning-budget", type=int, help=T("tokens de razonamiento por respuesta: -1 sin límite, 0 sin razonar", "reasoning tokens per answer: -1 unlimited, 0 none"))
-    r.add_argument("--temperature", type=float)
-    r.add_argument("--passk-n", type=int, help=T("programación: respuestas por problema para pass@1/pass@5 (1 = solo pass@1)",
-                                                 "coding: answers per problem for pass@1/pass@5 (1 = pass@1 only)"))
-    r.add_argument("--passk-temperature", type=float, help=T("temperatura de esas respuestas (por defecto 0.6)",
-                                                             "temperature for those answers (default 0.6)"))
+    r.add_argument("--temperature", type=float, help=T("temperatura de cada respuesta, también las de pass@k (por defecto 0.8)",
+                                                       "temperature of every answer, pass@k ones included (default 0.8)"))
+    r.add_argument("--passk-n", type=int, help=T("programación y herramientas: respuestas por problema para pass@1/pass@5, a --temperature "
+                                                 "(1 = solo pass@1)", "coding and tools: answers per problem for pass@1/pass@5, at "
+                                                 "--temperature (1 = pass@1 only)"))
     r.add_argument("--workers", type=int, help=T("peticiones simultáneas (≤ slots del servidor)", "concurrent requests (≤ server slots)"))
     r.add_argument("--base-url")
     r.add_argument("--model")

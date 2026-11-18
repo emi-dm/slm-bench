@@ -224,7 +224,7 @@ def record(s: Settings, meta: dict, summary: dict) -> dict | None:
         if c.get(key, {}).get("passk"):                     # programación: pass@5 y cómo se muestreó
             p5 = metrics.get("pass@5") or {}
             e["benchmarks"][key].update({"pass5": p5.get("value"), "pass5_stderr": p5.get("stderr"),
-                                         "samples": meta.get("passk_n", 1), "sample_temperature": meta.get("passk_temperature")})
+                                         "samples": meta.get("passk_n", 1)})
     # speed: per mode (a long-context prompt is much slower to generate after); the headline tok/s excludes long context.
     # With fewer parallel requests each one is faster, so the lowest worker count measured wins.
     def better(old):
@@ -396,7 +396,8 @@ def markdown(entries: list[dict]) -> str:
         temps = sorted({x.get("temperature") for x in b if x.get("temperature") is not None}) or ["–"]
         budgets = sorted({x.get("reasoning_budget", -1) for x in b}) or [-1]
         maxt = sorted({x.get("max_tokens") for x in b if x.get("max_tokens")}) or ["–"]
-        pk = sorted({f"n={x['samples']} @ T={x.get('sample_temperature')}" if (x.get("samples") or 1) > 1 else "n=1"
+        pk = sorted({f"n={x['samples']}" + (f" @ T={x['sample_temperature']}" if x.get("sample_temperature") is not None else "")
+                     if (x.get("samples") or 1) > 1 else "n=1"
                      for x in b if "samples" in x}) or ["–"]
         L.append(f"| **{e['name']}** | {m.get('quant', '–')} | {m.get('hardware', '–')} | {m.get('backend', '–')} | "
                  f"{str(m['size_gb']) + ' GB' if m.get('size_gb') else '–'} | {'/'.join(map(str, temps))} | {', '.join(pk)} | "

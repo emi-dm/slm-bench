@@ -1803,7 +1803,366 @@ class App:
                     threading.Thread(target=engine.stop_process, args=(a["pid"],), daemon=True).start()
 
     # ---- leaderboard ----
+    # brightness ramp of each mode's hue (xterm 256): a benchmark value goes from a dim tint to the full hue as it grows
+    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141)}
+    LB_MEDAL = (220, 252, 173)                     # gold, silver, bronze
+
+    @staticmethod
+    def _lb_short(name: str) -> str:
+        """Column title of a benchmark: drops the family prefix shared by the whole mode (MultiPL-E, BFCL, RULER NIAH)."""
+        for pre in ("MultiPL-E ", "BFCL ", "RULER NIAH "):
+            name = name.replace(pre, "")
+        return {"JavaScript": "JS", "LiveCodeBench": "LiveCode", "Parallel multiple": "Par. multi"}.get(name, name)
+
+    def _lb_bar(self, y, x, width, v, hue, bg=None):
+        """A thin meter: heavy line in the mode's hue (half-cell precision) over a light track."""
+        ui = self.ui
+        halves = int(round(max(0.0, min(1.0, v or 0)) * width * 2))
+        full, half = divmod(halves, 2)
+        ui.put(y, x, "━" * full + ("╸" if half else ""), ui.color(hue, bg, True))
+        rest = width - full - half
+        if rest > 0:
+            ui.put(y, x + full + half, "─" * rest, ui.color(240 if bg else ui.RULE, bg))
+
+    def _lb_heat(self, v, hue, bg=None):
+        """Colour of a benchmark's value: grey below 25 %, then the mode's hue, brighter and bold as it grows."""
+        ramp = self.LB_HEAT.get(hue, (245, 250, 255))
+        if v is None or v < 0.25:
+            return self.ui.color(242, bg)
+        return self.ui.color(ramp[0], bg) if v < 0.5 else self.ui.color(ramp[1], bg) if v < 0.75 else self.ui.color(ramp[2], bg, True)
+
     def screen_leaderboard(self):
+        """The leaderboard, drawn: one tab per mode (←→), a row per model + quant with its medal, score meter, speed and the
+        score of each benchmark tinted with the mode's hue; Enter opens a row's card. The settings live behind «s»."""
+        ui, s = self.ui, self.s
+        lb = leaderboard
+        lang = i18n.get_lang()
+        mode_i, sel, top, col0 = 0, 0, 0, 0
+        entries, stamp = None, None
+        opened = None                                          # (when, ok) of the last «open in the browser»
+        while True:
+            d = lb.paths(s)["entries"]
+            now = tuple(sorted((f.name, f.stat().st_mtime) for f in d.glob("*.json"))) if d.is_dir() else ()
+            if now != stamp:                                   # a run that just finished adds or updates a row
+                entries, stamp = lb.load_entries(s), now
+            lang = i18n.get_lang()
+            tabs = [(m, cat.MODES[m].get(lang, t), lb.ranked(entries, m)) for m, t in lb.modes()]
+            tabs = [t for t in tabs if t[2]]
+            h, w = ui.size()
+            ui.scr.erase()
+            ui.header("Leaderboard")
+            x0, W = 2, w - 4
+            if not tabs:
+                msg = [T("Todavía no hay modelos", "No models yet"),
+                       T("Lanza benchmarks (menú 2): cada modelo y quant medido aparece aquí, con su medalla.",
+                         "Run benchmarks (menu 2): every model and quant you measure shows up here, with its medal.")]
+                ui.put(h // 2 - 2, max(2, (w - len(msg[0])) // 2), msg[0], ui.color(209, None, True))
+                ui.put(h // 2, max(2, (w - len(msg[1])) // 2), msg[1], ui.color(ui.MUTED))
+                ui.draw_bars(h // 2 - 4, max(2, (w - 24) // 2), 24)
+                ui.footer(T("s ajustes · q volver", "s settings · q back"))
+                ui.scr.refresh()
+                k = ui.key(2000)
+                if k in ("q", "Q", KEY_ESC):
+                    return
+                if k in ("s", "S"):
+                    self.leaderboard_settings()
+                continue
+            mode_i %= len(tabs)
+            mode, title, rows = tabs[mode_i]
+            hue = self.MODE_COLOR.get(mode, 209)
+            sel = max(0, min(sel, len(rows) - 1))
+            # tabs: the current one is a pill in its hue, underlined; the rest a coloured dot
+            x, under = x0, None
+            for i, (m, t, rr) in enumerate(tabs):
+                hh = self.MODE_COLOR.get(m, 209)
+                label = f" {t} {len(rr)} "
+                if i == mode_i:
+                    ui.put(2, x, label, ui.color(ui.INK, hh, True))
+                    under = (x, len(label))
+                    x += len(label) + 2
+                else:
+                    ui.put(2, x, "●", ui.color(hh))
+                    ui.put(2, x + 2, t, ui.color(250))
+                    ui.put(2, x + 3 + len(t), str(len(rr)), ui.color(ui.MUTED))
+                    x += len(t) + len(str(len(rr))) + 6
+            n_models = len({e["name"] for e in entries})
+            # the «open in the browser» button, right of the tabs (it turns green for a moment once opened)
+            flash = opened and time.time() - opened[0] < 2.5
+            if flash:
+                label = " ✔ " + T("Abierto en el navegador", "Opened in the browser") + " " if opened[1] else " ✗ " + T("No se pudo abrir", "Could not open") + " "
+                btn = [(label, ui.color(ui.INK, 78 if opened[1] else 203, True))]
+            else:
+                text = " " + T("Abrir en el navegador", "Open in the browser") + " ↗ "
+                if x + len(text) + 5 > x0 + W:
+                    text = " HTML ↗ "
+                btn = [(" o ", ui.color(ui.INK, 209, True)), (text, ui.color(255, ui.SEL_BG, True))]
+            bw_ = sum(len(t) for t, _a in btn)
+            if x + bw_ + 1 <= x0 + W:
+                bx = x0 + W - bw_
+                for t, a in btn:
+                    ui.put(2, bx, t, a)
+                    bx += len(t)
+            ui.put(3, x0, "─" * W, ui.color(ui.RULE))
+            if under:
+                ui.put(3, under[0], "━" * under[1], ui.color(hue, None, True))
+            desc = cat.MODES[mode].get(f"desc_{lang}") or cat.MODES[mode].get("desc_en", "")
+            right = T(f"{n_models} modelos · {len(entries)} filas", f"{n_models} models · {len(entries)} rows")
+            ui.put(4, x0, desc[: max(0, W - len(right) - 3)], ui.color(250) | _italic())
+            ui.put(4, x0 + W - len(right), right, ui.color(ui.MUTED))
+            # columns: rank · model · score + meter · tok/s · one per benchmark (the ones that don't fit scroll with < >)
+            keys = [k for k in lb.mode_keys(mode) if any(k in e["benchmarks"] for e, _ in rows)]
+            catl = cat.catalog()
+            p5 = any(lb.mode_pass5(e, mode) is not None for e, _ in rows)
+            nw = max(22, min(36, W // 4))
+            xm, xs = x0 + 5, x0 + 5 + nw + 2
+            mw = max(8, min(18, W // 9))                        # score meter
+            xt = xs + 7 + mw
+            tw = 9
+            xb = xt + tw + 2
+            cws = [max(7, min(11, len(self._lb_short(catl[k]["name"])) + 2)) for k in keys]
+            col0 = max(0, min(col0, len(keys) - 1)) if keys else 0
+            vis, xx = [], xb
+            for j in range(col0, len(keys)):
+                if xx + cws[j] > x0 + W - 2:                    # room for the «›» marker
+                    break
+                vis.append((j, xx))
+                xx += cws[j] + 1
+            hidden_l, hidden_r = col0, len(keys) - col0 - len(vis)
+            hy = 6
+            hd = ui.color(ui.MUTED, None, True)
+            ui.put(hy, x0 + 1, "#", hd)
+            ui.put(hy, xm, T("MODELO", "MODEL"), hd)
+            ui.put(hy, xs, T("PUNTUACIÓN", "SCORE"), hd)
+            ui.put(hy, xt, "tok/s".rjust(tw), hd)
+            for j, cx in vis:
+                ui.put(hy, cx, self._lb_short(catl[keys[j]]["name"])[: cws[j]].rjust(cws[j]), hd)
+            if hidden_l:
+                ui.put(hy, xb, "‹", ui.color(hue, None, True))
+            if hidden_r:
+                ui.put(hy, xx, "›", ui.color(hue, None, True))
+            ui.put(hy + 1, x0, "─" * W, ui.color(ui.RULE))
+            # the list: 2 lines per row and a blank one; a divider before the first row that isn't comparable
+            blocks, y_of = [], {}
+            for i, (e, sc) in enumerate(rows):
+                if not sc["ranked"] and not any(b[0] == "div" for b in blocks):
+                    blocks.append(("div", None, 2))
+                blocks.append(("row", i, 3))
+            off, pos = 0, []
+            for b in blocks:
+                pos.append(off)
+                if b[0] == "row":
+                    y_of[b[1]] = off
+                off += b[2]
+            y1, y2 = hy + 2, h - 3
+            room = y2 - y1
+            if y_of[sel] < top:
+                top = y_of[sel] - (2 if sel and blocks[[b[1] for b in blocks].index(sel) - 1][0] == "div" else 0)
+            elif y_of[sel] + 2 > top + room:
+                top = y_of[sel] + 3 - room
+            top = max(0, min(top, max(0, off - room)))
+            for b, o in zip(blocks, pos):
+                y = y1 + o - top
+                if y < y1 - 2 or y >= y2:
+                    continue
+                if b[0] == "div":
+                    lab = " " + T("No comparables aún: faltan benchmarks o se midió una muestra",
+                                  "Not comparable yet: missing benchmarks or a sample run") + " "
+                    if y >= y1:
+                        ui.put(y, x0, "╌╌" + lab + "╌" * max(0, W - len(lab) - 2), ui.color(ui.MUTED))
+                    continue
+                i = b[1]
+                e, sc = rows[i]
+                m = e["meta"]
+                cur = i == sel
+                bg = ui.SEL_BG if cur else None
+                if cur:
+                    for yy in (y, y + 1):
+                        if y1 <= yy < y2:
+                            ui.put(yy, x0 - 1, " " * (W + 2), ui.color(255, bg))
+                            ui.put(yy, x0 - 1, "▌", ui.color(hue, bg))
+                if not (y1 <= y and y + 1 < y2):
+                    continue
+                if sc["ranked"] and i < 3:
+                    ui.put(y, x0 + 1, f" {i + 1} ", ui.color(ui.INK, self.LB_MEDAL[i], True))
+                else:
+                    ui.put(y, x0 + 1, f"{i + 1:>2}", ui.color(ui.MUTED, bg))
+                name = e["name"] if len(e["name"]) <= nw else "…" + e["name"][-(nw - 1):]
+                ui.put(y, xm, name, ui.color(255 if sc["ranked"] else 250, bg, True))
+                facts = [x for x in (lb.params_txt(m) if m.get("params_b") else "", m.get("quant", ""),
+                                     f"{m['size_gb']} GB" if m.get("size_gb") else "") if x]
+                ft = " · ".join(facts)
+                ui.put(y + 1, xm, ft[:nw], ui.color(ui.MUTED, bg))
+                if not sc["ranked"]:
+                    tag = (f"{sc['n']}/{sc['of']}" if not sc["complete"] else T("muestra", "sample"))
+                    tx = xm + min(nw, len(ft)) + 2
+                    if tx + len(tag) + 2 <= xs:
+                        ui.put(y + 1, tx, f"⚠ {tag}", ui.color(220, bg))
+                v = sc["score"]
+                ui.put(y, xs, (lb.pct(v, 1).rstrip("%") if v is not None else "–").rjust(5),
+                       ui.color(255 if sc["ranked"] else 250, bg, True))
+                self._lb_bar(y, xs + 7, mw, v, hue if sc["ranked"] else 243, bg)
+                if p5:
+                    v5 = lb.mode_pass5(e, mode)
+                    ui.put(y + 1, xs, (f"pass@5 {v5 * 100:.1f}" if v5 is not None else "")[: mw + 6], ui.color(ui.MUTED, bg))
+                sp = lb.mode_speed(e, mode)
+                ui.put(y, xt, f"{sp.get('gen_tps') or '–'}".rjust(tw), ui.color(250, bg))
+                if mode == "long" and sp.get("prompt_tps"):
+                    ui.put(y + 1, xt, f"pp {sp['prompt_tps']}".rjust(tw), ui.color(ui.MUTED, bg))
+                for j, cx in vis:
+                    r = e["benchmarks"].get(keys[j])
+                    cw = cws[j]
+                    if not r or r.get("value") is None:
+                        ui.put(y, cx, "–".rjust(cw), ui.color(240, bg))
+                        continue
+                    val = f"{r['value'] * 100:.1f}" + ("" if r.get("full") else "*")
+                    ui.put(y, cx, val.rjust(cw), self._lb_heat(r["value"], hue, bg))
+                    self._lb_bar(y + 1, cx + 1, cw - 1, r["value"], hue, bg)
+            more = []
+            if hidden_l or hidden_r:
+                more.append(T(f"‹ › más benchmarks ({hidden_l + hidden_r} ocultos)", f"‹ › more benchmarks ({hidden_l + hidden_r} hidden)"))
+            if any(not (e["benchmarks"].get(k) or {}).get("full", True) for e, _ in rows for k in keys):
+                more.append(T("* medido sobre una muestra", "* measured on a sample"))
+            more.append(T("puntuación = media de los benchmarks del modo", "score = mean of the mode's benchmarks"))
+            ui.hintline("  ·  ".join(more))
+            ui.footer(T("←→ modo · ↑↓ fila · Enter ficha · <> columnas · o abrir HTML · d quitar · s ajustes · q volver",
+                        "←→ mode · ↑↓ row · Enter card · <> columns · o open HTML · d remove · s settings · q back"))
+            ui.scr.refresh()
+            k = ui.key(500 if flash else 2000)
+            if k in ("q", "Q", KEY_ESC):
+                return
+            if k in (curses.KEY_RIGHT, "\t", "l"):
+                mode_i, sel, top, col0 = mode_i + 1, 0, 0, 0
+            elif k in (curses.KEY_LEFT, curses.KEY_BTAB, "h"):
+                mode_i, sel, top, col0 = mode_i - 1, 0, 0, 0
+            elif isinstance(k, str) and k.isdigit() and 1 <= int(k) <= len(tabs):
+                mode_i, sel, top, col0 = int(k) - 1, 0, 0, 0
+            elif k in (curses.KEY_DOWN, "j"):
+                sel = min(len(rows) - 1, sel + 1)
+            elif k in (curses.KEY_UP, "k"):
+                sel = max(0, sel - 1)
+            elif k in (curses.KEY_NPAGE, " "):
+                sel = min(len(rows) - 1, sel + max(1, room // 3))
+            elif k == curses.KEY_PPAGE:
+                sel = max(0, sel - max(1, room // 3))
+            elif k in ("g", curses.KEY_HOME):
+                sel = 0
+            elif k in ("G", curses.KEY_END):
+                sel = len(rows) - 1
+            elif k in (">", ".") and hidden_r:
+                col0 += 1
+            elif k in ("<", ",") and hidden_l:
+                col0 -= 1
+            elif k in ("\n", "\r", curses.KEY_ENTER):
+                e = rows[sel][0]
+                ui.md_pager(f"Leaderboard · {e['name']}", "", head=lambda width, e=e: self.leaderboard_card(e, entries, width))
+            elif k in ("o", "O"):
+                try:
+                    lb.open_html(lb.rebuild(s)["html"])
+                    opened = (time.time(), True)
+                except Exception as ex:  # noqa: BLE001
+                    opened = (time.time(), False)
+                    ui.message(str(ex), C_BAD, "Error")
+            elif k in ("d", "D", curses.KEY_DC):
+                e = rows[sel][0]
+                label = f"{e['name']} {e['meta'].get('quant', '')}".strip()
+                if ui.confirm(T(f"¿Quitar «{label}» del leaderboard? Se borran sus resultados de todos los modos.",
+                                f"Remove '{label}' from the leaderboard? Its results in every mode are deleted.")):
+                    lb.remove_entry(e["id"], s)
+                    stamp = None
+            elif k in ("s", "S"):
+                self.leaderboard_settings()
+                stamp = None
+
+    def leaderboard_card(self, e: dict, entries: list[dict], width: int) -> list:
+        """A row of the leaderboard in detail: every mode's score and rank, each benchmark, speed, run settings and the other
+        quantizations of the same model. Lines of (text, curses attr) for md_pager."""
+        ui, lb = self.ui, leaderboard
+        lang = i18n.get_lang()
+        catl = cat.catalog()
+        m = e["meta"]
+        W = max(40, min(width, 110))
+        dim, mut, bold = ui.color(ui.MUTED), ui.color(250), curses.A_BOLD
+
+        def rule(label, hue=209):
+            return [("── ", ui.color(hue)), (label, ui.color(hue, None, True)), (" " + "─" * max(0, W - len(label) - 4), ui.color(ui.RULE))]
+
+        def meter(v, n, hue):
+            halves = int(round(max(0.0, min(1.0, v or 0)) * n * 2))
+            full, half = divmod(halves, 2)
+            return [("━" * full + ("╸" if half else ""), ui.color(hue, None, True)), ("─" * (n - full - half), ui.color(ui.RULE))]
+
+        facts = [x for x in (lb.params_txt(m) + " params" if m.get("params_b") else "", f"{m['size_gb']} GB" if m.get("size_gb") else "",
+                             m.get("backend", ""), m.get("hardware", "")) if x]
+        L = [[], [(e["name"], ui.color(255, None, True))] + ([("  ", 0), (f" {m['quant']} ", ui.color(ui.INK, 209, True))] if m.get("quant") else []),
+             [(" · ".join(facts), dim)], []]
+        mw = max(10, min(30, W - 44))
+        L.append(rule(T("Puntuación por modo", "Score by mode")))
+        L.append([])
+        for mode, _t in lb.modes():
+            rows = lb.ranked(entries, mode)
+            sc = lb.mode_score(e, mode)
+            if not sc["n"]:
+                continue
+            hue = self.MODE_COLOR.get(mode, 209)
+            title = cat.MODES[mode].get(lang, mode)
+            pos = next((i for i, (x, _) in enumerate(rows) if x["id"] == e["id"]), None)
+            if sc["ranked"] and pos is not None:
+                place = (f"#{pos + 1} " + T("de", "of") + f" {len(rows)}", ui.color(self.LB_MEDAL[pos] if pos < 3 else 250, None, pos < 3))
+            else:
+                place = ((f"⚠ {sc['n']}/{sc['of']} " + T("medidos", "measured")) if not sc["complete"] else "⚠ " + T("muestra", "sample"), ui.color(220))
+            L.append([("● ", ui.color(hue)), (title[:19].ljust(19), bold), (lb.pct(sc["score"], 1).rjust(7), ui.color(255, None, True)), ("  ", 0)]
+                     + meter(sc["score"], mw, hue if sc["ranked"] else 243) + [("  ", 0), place])
+        for mode, _t in lb.modes():
+            keys = [k for k in lb.mode_keys(mode) if k in e["benchmarks"]]
+            if not keys:
+                continue
+            hue = self.MODE_COLOR.get(mode, 209)
+            L += [[], rule(cat.MODES[mode].get(lang, mode), hue), []]
+            for k in keys:
+                r = e["benchmarks"][k]
+                extra = []
+                if r.get("pass5") is not None:
+                    extra.append(f"pass@5 {r['pass5'] * 100:.1f}")
+                extra.append(f"n={r.get('n')}" + ("" if r.get("full") else " · " + T("muestra", "sample")))
+                if r.get("stderr"):
+                    extra.append(f"± {r['stderr'] * 100:.1f}")
+                L.append([("  " + catl.get(k, {}).get("name", k)[:20].ljust(21), mut), (lb.pct(r.get("value"), 1).rjust(7), self._lb_heat(r.get("value"), hue)),
+                          ("  ", 0)] + meter(r.get("value"), mw, hue) + [("  " + " · ".join(extra), dim)])
+            sp = lb.mode_speed(e, mode)
+            if sp.get("gen_tps"):
+                L.append([("  " + T("Velocidad", "Speed").ljust(21), mut), (f"{sp['gen_tps']}".rjust(7), ui.color(255, None, True)), (" tok/s", dim)]
+                         + ([("  ·  prompt ", dim), (f"{sp['prompt_tps']} tok/s", mut)] if sp.get("prompt_tps") else [])
+                         + ([(f"  ·  {sp['workers']} " + T("en paralelo", "in parallel"), dim)] if sp.get("workers") else []))
+        b = list(e["benchmarks"].values())
+        temps = sorted({x.get("temperature") for x in b if x.get("temperature") is not None})
+        budgets = sorted({x.get("reasoning_budget", -1) for x in b})
+        maxt = sorted({x.get("max_tokens") for x in b if x.get("max_tokens")})
+        pk = sorted({f"{x['samples']}" + (f" @ T={x['sample_temperature']}" if x.get("sample_temperature") is not None else "")
+                     for x in b if (x.get("samples") or 1) > 1})
+        settings = [(T("Temperatura", "Temperature"), "/".join(map(str, temps)) or "–"),
+                    (T("Presupuesto de razonamiento", "Reasoning budget"), "/".join(T("sin límite", "unlimited") if x < 0 else str(x) for x in budgets) or "–"),
+                    (T("Tokens máximos", "Max tokens"), "/".join(map(str, maxt)) or "–"),
+                    (T("Respuestas por problema (pass@k)", "Answers per problem (pass@k)"), ", ".join(pk) or "1"),
+                    (T("Actualizado", "Updated"), e.get("updated") or "–"), ("id", e["id"])]
+        L += [[], rule(T("Ajustes de la ejecución", "Run settings")), []]
+        L += [[("  " + a.ljust(34), mut), (str(v_), 0)] for a, v_ in settings]
+        sibs = sorted((x for x in entries if x["name"] == e["name"] and x["id"] != e["id"]), key=lambda x: -(x["meta"].get("size_gb") or 0))
+        if sibs:
+            L += [[], rule(T("Otras cuantizaciones", "Other quantizations")), []]
+            for x in [e] + sibs:
+                q = x["meta"].get("quant") or "?"
+                segs = [("  " + ("▸ " if x is e else "  ") + q.ljust(9), ui.color(209, None, True) if x is e else bold),
+                        (f"{x['meta']['size_gb']} GB".rjust(9) if x["meta"].get("size_gb") else " " * 9, dim)]
+                for mode, _t in lb.modes():
+                    sc = lb.mode_score(x, mode)
+                    if sc["n"]:
+                        segs += [("   ● ", ui.color(self.MODE_COLOR.get(mode, 209))), (lb.pct(sc["score"], 1) + ("" if sc["ranked"] else "*"), mut)]
+                if x["speed"].get("gen_tps"):
+                    segs.append((f"   {x['speed']['gen_tps']} tok/s", dim))
+                L.append(segs)
+        return L + [[]]
+
+    def leaderboard_settings(self):
         ui, s = self.ui, self.s
         state = {}
         while True:
@@ -1818,33 +2177,20 @@ class App:
                              "Each benchmark is stored in the model + quant row, so you can measure one mode or benchmark at a time. Cancelled "
                              "runs are not added; partial ones (samples per benchmark) are marked n= and never replace a full result.")),
                 Field("", "Acciones", "section"),
-                Field("view", "Ver clasificación", "action", ""),
-                Field("open", "Abrir leaderboard.html en el navegador", "action", ""),
+                Field("markdown", T("Ver leaderboard.md", "View leaderboard.md"), "action", ""),
                 Field("rebuild", "Regenerar leaderboard.md / .html / .svg", "action", ""),
-                Field("remove", T("Quitar una fila…", "Remove a row…"), "action", ""),
             ]
-            kind, key = ui.form("Leaderboard", fields, state)
+            kind, key = ui.form(T("Leaderboard · ajustes", "Leaderboard · settings"), fields, state)
             sync(fields, s)
             config.save(s)
             if kind == "back":
                 return
             try:
-                if key == "view":
-                    ui.md_pager("Leaderboard", leaderboard.markdown(leaderboard.load_entries(s)))
-                elif key == "open":
-                    pp = leaderboard.rebuild(s)
-                    leaderboard.open_html(pp["html"])
-                    ui.message(f"Abierto en el navegador:\n{pp['html']}", C_OK)
+                if key == "markdown":
+                    ui.md_pager("leaderboard.md", leaderboard.markdown(leaderboard.load_entries(s)))
                 elif key == "rebuild":
                     pp = leaderboard.rebuild(s)
                     ui.message(f"Regenerado:\n{pp['md']}\n{pp['html']}\n{pp['svg']}", C_OK)
-                elif key == "remove":
-                    if not entries:
-                        ui.message("No hay modelos.", C_WARN)
-                        continue
-                    i = ui.menu(T("Quitar una fila", "Remove a row"), [(f"{e['name']}  {e['meta'].get('quant', '')}".strip(), e["id"]) for e in entries])
-                    if i is not None and ui.confirm(T(f"¿Quitar «{entries[i]['id']}» del leaderboard?", f"Remove '{entries[i]['id']}' from the leaderboard?")):
-                        leaderboard.remove_entry(entries[i]["id"], s)
             except Exception as e:  # noqa: BLE001
                 ui.message(str(e), C_BAD, "Error")
 
@@ -1883,11 +2229,10 @@ class App:
                       hint=T("-1 = sin límite · 0 = sin razonar · N = tope de tokens de razonamiento por respuesta", "-1 = unlimited · 0 = no reasoning · N = max reasoning tokens per answer")),
                 Field("temperature", T("Temperatura", "Temperature"), "float", s.temperature),
                 Field("passk_n", T("pass@k: respuestas por problema (código, herramientas)", "pass@k: answers per problem (coding, tools)"), "int", s.passk_n,
-                      hint=T("5 = pass@1 y pass@5 (5× más peticiones en programación y herramientas) · 1 = solo pass@1, más rápido",
-                             "5 = pass@1 and pass@5 (5× more requests for coding and tool calling) · 1 = pass@1 only, faster")),
-                Field("passk_temperature", T("pass@k: temperatura", "pass@k: temperature"), "float", s.passk_temperature,
-                      hint=T("Para varias respuestas hay que muestrear (>0). Con n = 1 se usa la temperatura normal.",
-                             "Several answers need sampling (>0). With n = 1 the normal temperature is used.")),
+                      hint=T("5 = pass@1 y pass@5 (5× más peticiones en programación y herramientas) · 1 = solo pass@1, más rápido. "
+                             "Todas a la temperatura de arriba: a 0 las 5 salen casi iguales y pass@5 ≈ pass@1.",
+                             "5 = pass@1 and pass@5 (5× more requests for coding and tool calling) · 1 = pass@1 only, faster. "
+                             "All at the temperature above: at 0 the 5 come out nearly identical and pass@5 ≈ pass@1.")),
                 Field("workers", T("Peticiones en paralelo", "Parallel requests"), "int", s.workers, hint=T("No más que los slots (-np) del servidor.", "No more than the server slots (-np).")),
                 Field("", T("Modelo a evaluar", "Model to evaluate"), "section"),
                 Field("", "", "info", f"{self.current_model() or '—'} @ {s.base_url}"),
@@ -1900,7 +2245,7 @@ class App:
             def pull(fs):
                 for f in fs:
                     if f.key in ("ld_extra_tasks", "ld_max_samples", "ld_max_new_tokens", "reasoning_budget", "temperature", "workers",
-                                 "passk_n", "passk_temperature"):
+                                 "passk_n"):
                         setattr(s, f.key, f.value)
                 picked = [f.key[2:] for f in fs if f.key.startswith("b:") and f.value]
                 s.benchmarks = [] if set(picked) == set(mode_keys) else picked

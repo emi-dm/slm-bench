@@ -67,7 +67,7 @@ Before using any model, every adapted benchmark was validated by scoring its **r
 | MGSM (es) | 250/250 · wrong number accepted 0/250 | Official criterion (last number of the answer), also with thousands separators |
 | RULER NIAH 4k / 8k | 4000/4000 · 4000/4000 | string_match_all as in RULER; an answer missing one value always scores below 100% |
 
-pass@k (coding): n answers per problem (default 5, sampled at temperature 0.6) and the unbiased estimator of Chen et al. (2021), identical to lighteval's `estimate_pass_at_k`. With 5 copies of the reference solution a problem scores pass@1 = pass@5 = 1; with 2 correct out of 5, pass@1 = 0.4 and pass@5 = 1.
+pass@k (coding and tool calling): n answers per problem (default 5), all at the run's temperature (default 0.8, the same one a single answer uses), and the unbiased estimator of Chen et al. (2021), identical to lighteval's `estimate_pass_at_k`. With 5 copies of the reference solution a problem scores pass@1 = pass@5 = 1; with 2 correct out of 5, pass@1 = 0.4 and pass@5 = 1.
 
 The lighteval benchmarks (IFEval, GSM8K, MATH-500) use lighteval's implementation unchanged.
 
