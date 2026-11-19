@@ -401,7 +401,19 @@ def cmd_tui(args):
     run_tui()
 
 
+def _exit_on_signal(signum, _frame):
+    """SIGTERM / SIGHUP (a closed terminal) end slmbench like Ctrl+C would: `finally` blocks and atexit handlers run, so
+    the sandboxes of a run are removed instead of being left behind."""
+    raise SystemExit(128 + signum)
+
+
 def main():
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _exit_on_signal)
+        except (ValueError, OSError):
+            pass
     i18n.set_lang(config.load().ui_lang)
     modes = list(cat.MODES) + ["all"]
     ap = argparse.ArgumentParser(prog="slmbench", description=T(

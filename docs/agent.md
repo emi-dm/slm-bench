@@ -81,8 +81,10 @@ sbx  slmbench-run-<pid>-f…   pulls the task images (registry only) → docker 
   both sandboxes get half of the host's cores (at most 8). Mind your model server's memory on top of that.
 - **Grading.** `swebench` 5.0.2 inside the sandbox, with its own patch-apply fallbacks, eval script, log parser and
   `get_eval_report`. Only the container runtime differs from `swebench.harness.run_evaluation`.
-- **Both sandboxes are deleted** when the run ends (finished, failed or cancelled). A sandbox left by a process that died
-  is removed by the next run.
+- **Both sandboxes are deleted** when the run ends: finished, failed, cancelled (`x` in the live view, `Ctrl+C`), or
+  slmbench stopped with SIGTERM or by closing its terminal (SIGHUP). Only a `kill -9` can leave them behind; those are
+  removed the next time a run starts or the TUI opens (their owner process is gone; a running slmbench's are never
+  touched).
 - **The template.** `setup` creates a sandbox, installs mini-SWE-agent, swebench, Node.js 22, Pi, OpenCode and ripgrep in `/opt`
   (PyPI, nodejs.org and npm are allowed by Docker Sandboxes' default policy only while it is built), saves it as
   `slmbench-agent:v4` and removes it.

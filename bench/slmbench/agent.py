@@ -28,6 +28,7 @@ the other 48 (matplotlib, scikit-learn, xarray, astropy) are skipped and the rep
 """
 from __future__ import annotations
 
+import atexit
 import base64
 import dataclasses
 import datetime as dt
@@ -277,9 +278,12 @@ def provision(on_line=print) -> bool:
     if sandbox.exists(name):
         sandbox._sbx("rm", "--force", name, timeout=300)
     on_line(T(f"  creando el sandbox {name} (sin carpetas del host)…", f"  creating sandbox {name} (no host folders)…"))
+    with _LIVE_LOCK:
+        _LIVE.add(name)
     r = sandbox._sbx("create", "--no-progress", "--name", name, "shell", timeout=900)
     if r.returncode != 0:
         on_line("✗ " + (r.stderr or r.stdout).strip()[-400:])
+        _forget(name)
         return False
     try:
         script = _PROVISION.format(mini=MINI_SWE_AGENT, swebench=SWEBENCH, node=NODE, pi=pi_version(), opencode=OPENCODE, rg=RIPGREP,
@@ -300,7 +304,7 @@ def provision(on_line=print) -> bool:
             on_line("✗ could not save the template: " + (r.stderr or r.stdout).strip()[-400:])
             return False
     finally:
-        sandbox._sbx("rm", "--force", name, timeout=300)
+        _forget(name)
     for old in sandbox._templates():
         if any(sandbox._same_ref(old, f"slmbench-agent:v{v}") for v in range(1, int(VERSION))):
             sandbox._sbx("template", "rm", "--force", old, timeout=300)
@@ -323,6 +327,26 @@ def setup(on_line=print, download: bool = True) -> dict:
 # ---------------------------------------------------------------------------------------------
 # Sandboxes of a run
 # ---------------------------------------------------------------------------------------------
+_LIVE: set[str] = set()                           # sandboxes this process created and hasn't removed yet
+_LIVE_LOCK = threading.Lock()
+
+
+def _forget(name: str) -> None:
+    sandbox.destroy(name)
+    with _LIVE_LOCK:
+        _LIVE.discard(name)
+
+
+@atexit.register
+def _cleanup() -> None:
+    """Whatever way slmbench ends (also SIGTERM / SIGHUP, which the CLI turns into a normal exit), its sandboxes go with it.
+    Only a SIGKILL skips this; the next run or TUI start removes those (sandbox.prune: their owner is gone)."""
+    with _LIVE_LOCK:
+        left = list(_LIVE)
+    for n in left:
+        _forget(n)
+
+
 def _create(kind: str, template: str | None, memory: str) -> str:
     """kind 'a': the run sandbox (from the template, no network); 'f': the image fetcher (registry access). Both with an
     explicit memory cap and half of the host's cores (at most 8)."""
@@ -330,9 +354,15 @@ def _create(kind: str, template: str | None, memory: str) -> str:
     args = ["create", "--no-progress", "--name", name, "--memory", memory, "--cpus", str(sandbox.default_cpus())]
     if template:
         args += ["--pull", "never", "-t", template, "--deny-network", "**"]
-    r = sandbox._sbx(*args, "shell", timeout=900)
+    with _LIVE_LOCK:
+        _LIVE.add(name)
+    try:
+        r = sandbox._sbx(*args, "shell", timeout=900)
+    except BaseException:
+        _forget(name)
+        raise
     if r.returncode != 0:
-        sandbox.destroy(name)
+        _forget(name)
         raise RuntimeError(f"could not create sandbox {name}: " + (r.stderr or r.stdout).strip()[-300:])
     return name
 
@@ -677,6 +707,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
             pass
         _on_line(text)
 
+    sandbox.prune()                                  # sandboxes left by a slmbench that died (kill -9, a crash)
     insts = select(s.ld_max_samples)
     avail_n, total_n = len(available()), cat.catalog()[keys[0]]["n"]
     work = [(inst, spec, hs[k]) for inst in insts for spec, k in zip(specs, keys)]
@@ -885,7 +916,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
             relay.stop()
         for b in (run_box, fetch_box):
             if b:
-                sandbox.destroy(b)
+                _forget(b)
         if run_box:
             on_line(T("Sandboxes eliminados", "Sandboxes removed"))
         for f in (active, cancel_file):

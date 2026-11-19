@@ -854,6 +854,12 @@ class App:
                 cat.missing_tools(code[0])      # the sandbox status + the compilers inside it, cached for the session
         except Exception:
             pass
+        try:                                    # sandboxes left by a slmbench that died (kill -9, a crash): removed now
+            from . import sandbox
+            if sandbox.sbx_installed():
+                sandbox.prune()
+        except Exception:
+            pass
 
     def current_model(self) -> str:
         return self.s.model or (self.models_seen[0] if self.models_seen else "")
