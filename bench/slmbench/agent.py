@@ -457,6 +457,7 @@ class Relay:
         except ValueError:
             pass
         self.lock, self.slock = threading.Lock(), threading.Lock()
+        self.max_tokens = None
         self.steps: dict[str, int] = {}
         self.errors: list[str] = []
         self.port = random.randint(20000, 60000)
@@ -464,7 +465,8 @@ class Relay:
 
     def start(self) -> None:
         self.p = subprocess.Popen(["sbx", "--no-input", "exec", "-i", self.box, "python3", "-u", f"{BOX}/relay.py", str(self.port)],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, env=sandbox._sbx_env())
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                  env=sandbox._sbx_env())    # stderr: sbx says "context canceled" when the relay is stopped
         first = self.p.stdout.readline()
         if '"ready"' not in first:
             raise RuntimeError("the model relay did not start inside the sandbox: " + first[:200])
@@ -519,7 +521,7 @@ class Relay:
             body.setdefault(k, v)
         body.setdefault("temperature", float(self.s.temperature))     # harnesses that don't send them get slmbench's
         if not body.get("max_tokens") and not body.get("max_completion_tokens"):
-            body["max_tokens"] = int(self.s.agent_max_tokens)
+            body["max_tokens"] = limits(self.s)[1] if self.max_tokens is None else self.max_tokens
         headers = {"Content-Type": "application/json"}
         key = self.s.api_key or os.environ.get("SLMBENCH_API_KEY", "")
         if key:
@@ -644,11 +646,31 @@ class Relay:
 # ---------------------------------------------------------------------------------------------
 # A run
 # ---------------------------------------------------------------------------------------------
+def server_context(base_url: str) -> int | None:
+    """The context one request can use on the server (llama-server: n_ctx per slot, from /props); None if it doesn't say."""
+    root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+    try:
+        with _http(root + "/props", timeout=4) as r:
+            n = (json.loads(r.read()).get("default_generation_settings") or {}).get("n_ctx")
+        return int(n) if n else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def limits(s: Settings) -> tuple[int, int]:
+    """(context, max tokens per answer) the harnesses are given. The context is the server's real one when it says so (else
+    the setting); an answer may use at most a quarter of it, so the history always has room: a harness that reserves more
+    for the answer than the window holds compacts or overflows at every step."""
+    ctx = server_context(s.base_url) or int(s.max_context or 32768)
+    return ctx, max(1024, min(int(s.agent_max_tokens), ctx // 4))
+
+
 def _task_config(s: Settings, model: str, harness: str, inst: dict, image: str, api_base: str, label: str, run_id: str,
-                 extra: dict | None = None) -> dict:
+                 extra: dict | None = None, ctx: tuple[int, int] | None = None) -> dict:
+    context, max_tokens = ctx or limits(s)
     return {"instance": inst, "harness": harness, "image": image, "api_base": api_base, "model": model, "label": run_id,
-            "temperature": float(s.temperature), "max_tokens": int(s.agent_max_tokens), "step_limit": int(s.agent_step_limit),
-            "timeout": int(s.agent_timeout), "context": int(s.max_context or 32768), "memory": f"{TASK_MEMORY}g",
+            "temperature": float(s.temperature), "max_tokens": max_tokens, "step_limit": int(s.agent_step_limit),
+            "timeout": int(s.agent_timeout), "context": context, "memory": f"{TASK_MEMORY}g",
             "dir": f"{BOX}/tasks/{harness}/{inst['instance_id']}", "grader": f"{BOX}/grade.py",
             "pi_extension": f"{BOX}/pi_docker.ts", "opencode": "/opt/opencode/bin/opencode", **(extra or {})}
 
@@ -764,6 +786,11 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
     n_all = len(work) + len(done_rows)
     run_id = f"{os.getpid()}-{secrets.token_hex(3)}"
     parallel = max(1, min(int(s.agent_workers or 1), MAX_PARALLEL))
+    ctx_limits = limits(s)
+    if ctx_limits[1] < int(s.agent_max_tokens):
+        on_line(T(f"Contexto del servidor: {ctx_limits[0]} tokens → máx. {ctx_limits[1]} tokens por respuesta (no {s.agent_max_tokens}): "
+                  "el resto queda para el historial", f"Server context: {ctx_limits[0]} tokens → max {ctx_limits[1]} tokens per answer "
+                  f"(not {s.agent_max_tokens}): the rest is left for the history"))
     on_line(T(f"SWE-bench Lite · {len(insts)} tareas ({avail_n}/{total_n} con imagen para {arch()}) · "
               f"{', '.join(hs[k] for k in keys)} · {parallel} en paralelo",
               f"SWE-bench Lite · {len(insts)} tasks ({avail_n}/{total_n} with an image for {arch()}) · "
@@ -801,6 +828,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
         images = Images(run_box, fetch_box)
         if not regrade:
             relay = Relay(run_box, s, model, stats, on_step, kind_srv)
+            relay.max_tokens = ctx_limits[1]
             relay.start()
         by_inst: dict[str, list] = {}
         for inst, spec, h in work:
@@ -818,7 +846,8 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
                 pdir = Path(regrade) / "agent" / h / iid
                 extra = {"harness": "regrade", "patch": (pdir / "patch.diff").read_text() if (pdir / "patch.diff").exists() else "",
                          "exit_status": pr.get("exit_status")}
-            cfg = _task_config(s, model, h, inst, image, relay.api_base(cat.spec_to_key(spec), iid) if relay else "", label, run_id, extra)
+            cfg = _task_config(s, model, h, inst, image, relay.api_base(cat.spec_to_key(spec), iid) if relay else "", label, run_id, extra,
+                               ctx_limits)
             if regrade:                                     # the earlier run's files, graded again in this run's folder
                 import shutil
                 shutil.copytree(Path(regrade) / "agent" / h / iid, out / "agent" / h / iid, dirs_exist_ok=True,
@@ -953,7 +982,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
     summary = _summary(done_rows, specs)
     meta = {"model": model, "base_url": s.base_url, "specs": specs, "date": dt.datetime.now().isoformat(timespec="seconds"),
             "label": label, "mode": "agent", "temperature": s.temperature, "reasoning_budget": s.reasoning_budget,
-            "max_new_tokens": s.agent_max_tokens, "step_limit": s.agent_step_limit, "task_timeout": s.agent_timeout,
+            "max_new_tokens": ctx_limits[1], "context": ctx_limits[0], "step_limit": s.agent_step_limit, "task_timeout": s.agent_timeout,
             "parallel": parallel, "tasks": len(insts), "available": avail_n, "dataset_n": total_n, "arch": arch(),
             "images": "Epoch AI arm64 (ghcr.io/epoch-research)" if arch() == "arm64" else "SWE-bench (docker.io/swebench)",
             "dataset": dataset_info(), "harness_versions": {"mini-swe-agent": MINI_SWE_AGENT, "pi": pi_version(), "opencode": OPENCODE, "swebench": SWEBENCH},
@@ -994,8 +1023,9 @@ def report(meta: dict, summary: dict, rows: list[dict]) -> str:
          f"- SWE-bench Lite ({ds.get('dataset', DATASET)} @ {str(ds.get('revision', '?'))[:10]}): {meta['tasks']} "
          + T("tareas", "tasks") + f" · {meta['available']}/{meta['dataset_n']} " + T(f"con imagen para {meta['arch']}", f"with an image for {meta['arch']}")
          + f" ({meta.get('images')})",
-         f"- {T('temperatura', 'temperature')} {meta['temperature']}  ·  {T('máx. tokens por respuesta', 'max tokens per answer')} "
-         f"{meta['max_new_tokens']}  ·  {T('razonamiento', 'reasoning')}: {budget}  ·  {T('máx. pasos', 'max steps')} {meta['step_limit']}  ·  "
+         f"- {T('temperatura', 'temperature')} {meta['temperature']}  ·  " + (f"{T('contexto', 'context')} {meta['context']}  ·  "
+                                                                              if meta.get("context") else "")
+         + f"{T('máx. tokens por respuesta', 'max tokens per answer')} {meta['max_new_tokens']}  ·  {T('razonamiento', 'reasoning')}: {budget}  ·  {T('máx. pasos', 'max steps')} {meta['step_limit']}  ·  "
          f"{T('tiempo por tarea', 'time per task')} {int(meta['task_timeout']) // 60} min  ·  {meta['parallel']} " + T("en paralelo", "in parallel")]
     if meta.get("requests"):
         L.append(f"- {T('Llamadas al modelo', 'Model calls')}: {meta['requests']}  ·  {T('cortadas por max tokens', 'cut by max tokens')}: "

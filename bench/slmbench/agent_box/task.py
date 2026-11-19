@@ -220,7 +220,7 @@ def run_opencode() -> tuple[str, str]:
            "XDG_DATA_HOME": "/tmp/oc-home/.local/share", "XDG_CACHE_HOME": "/tmp/oc-home/.cache", "XDG_STATE_HOME": "/tmp/oc-home/.state",
            "OPENCODE_DISABLE_MODELS_FETCH": "1", "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1", "OPENCODE_DISABLE_CLAUDE_CODE": "1", "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-           "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1", "OPENCODE_DISABLE_AUTOCOMPACT": "1"}
+           "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1"}
     envargs = [x for k, v in env.items() for x in ("-e", f"{k}={v}")]
     cmd = ["docker", "exec", "-w", "/testbed", *envargs, c, "opencode", "run", "--format", "json", "--title", iid,
            PI_PROMPT.format(issue=cfg["instance"]["problem_statement"])]

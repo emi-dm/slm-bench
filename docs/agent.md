@@ -35,8 +35,11 @@ every run and mix the projects, so two partial runs of the same size are compara
 | `swebench_lite_pi` | [Pi](https://pi.dev) 1.5.2 | **native tool calls**: Pi's `read`, `write`, `edit` and `bash` tools, its own system prompt. Ends when the agent answers without a tool call. |
 | `swebench_lite_opencode` | [OpenCode](https://opencode.ai) 1.19.5 | **native tool calls**: OpenCode's `build` agent with its own tools (bash, read, edit, write, grep, glob, list, patch, todo…) and system prompt, every permission granted except the web ones. Ends when the agent answers without a tool call. |
 
-Both run with the same model settings: temperature, *max tokens per answer* (`agent_max_tokens`, 16384 by default: a
-step cut by the limit has no command and is wasted), the reasoning budget and the extra body. Limits per task: *max
+All run with the same model settings: temperature, *max tokens per answer* (`agent_max_tokens`, 16384 by default: a
+step cut by the limit has no command and is wasted), the reasoning budget and the extra body. The harnesses are told the
+server's real context window (llama-server's per-slot `n_ctx`, else the *context* setting), and an answer may use at most
+a quarter of it: a harness that reserves more for the answer than the window holds compacts (Pi) or overflows
+(OpenCode) at every step. Pi's and OpenCode's own context compaction stay on, as in normal use. Limits per task: *max
 steps* (`agent_step_limit`, 100 model calls) and *time* (`agent_timeout`, 1800 s for the agent; grading comes on top).
 Running them on the same tasks compares a bash-only agent with two tool-calling ones on the same model.
 

@@ -135,6 +135,25 @@ def _text(x) -> str:
     return "" if x is None else str(x)
 
 
+TOOL_CALLS_PREFIX = "SLMBENCH_TOOL_CALLS:"           # how slmbench's client hands tool calls to lighteval (bfcl.py)
+
+
+def _answer(text: str) -> tuple[str, list | None]:
+    """(content, tool_calls in OpenAI format) of a saved answer: tool-calling answers travel through lighteval as
+    'SLMBENCH_TOOL_CALLS:{"tool_calls": [...], "content": ...}'."""
+    if not (text or "").startswith(TOOL_CALLS_PREFIX):
+        return text or "", None
+    try:
+        d = json.loads(text[len(TOOL_CALLS_PREFIX):])
+    except ValueError:
+        return text, None
+    calls = [{"id": c.get("id") or "", "type": "function",
+              "function": {"name": c.get("name") or (c.get("function") or {}).get("name", ""),
+                           "arguments": c.get("arguments") if "arguments" in c else (c.get("function") or {}).get("arguments", "")}}
+             for c in d.get("tool_calls") or [] if isinstance(c, dict)]
+    return d.get("content") or "", calls
+
+
 def lighteval_rows(run_dir: Path) -> list[dict]:
     from . import review
     meta = _meta(run_dir)
@@ -147,13 +166,15 @@ def lighteval_rows(run_dir: Path) -> list[dict]:
             prompt = next((_text(m.get("content")) for m in reversed(msgs) if m.get("role") == "user"), "")
             for a in smp["answers"]:
                 session = [_msg(m.get("role", "user"), _text(m.get("content"))) for m in msgs]
-                session.append(_msg("assistant", a["text"], a.get("reasoning") or ""))
+                content, calls = _answer(a["text"])
+                session.append(_msg("assistant", content, a.get("reasoning") or "", calls))
                 v = smp["value"]
                 score = float(v) if isinstance(v, (int, float)) and v == v else None
                 rows.append({
                     **_base(run_dir, meta), "mode": mode, "benchmark": key, "benchmark_name": task["name"], "harness": "",
                     "harness_version": "", "task_id": str(smp["index"]), "repo": "", "sample": int(a["i"]), "task": prompt,
-                    "messages": session, "solution": a["text"],
+                    "messages": session,
+                    "solution": json.dumps([c["function"] for c in calls], ensure_ascii=False) if calls is not None else content,
                     # the metric is the problem's: with several answers (pass@k) it says which one is right only when all agree
                     "correct": True if smp["status"] == "pass" else False if smp["status"] == "fail" else None, "score": score,
                     "metric": task["metric"] or "", "exit_status": "", "steps": 1, "finish": a.get("finish") or "",

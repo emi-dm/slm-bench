@@ -684,8 +684,9 @@ def live_lines(rows: list[dict], key: str, iid: str, title: str, finished: bool,
     list_room = max(2, room - len(cur_lines) - 1)
     shown_prev = earlier[-(list_room - (1 if len(earlier) > list_room - 1 else 0)):] if earlier else []
     if len(earlier) > len(shown_prev):
-        out.append([(f"  … {len(earlier) - len(shown_prev)} " + T("pasos anteriores (e: transcripción completa)",
-                                                                  "earlier steps (e: full transcript)"), "dim")])
+        n_hidden = len(earlier) - len(shown_prev)
+        out.append([(f"  … {n_hidden} " + (T("paso anterior", "earlier step") if n_hidden == 1 else T("pasos anteriores", "earlier steps"))
+                     + T(" (e: transcripción completa)", " (e: full transcript)"), "dim")])
     for st in shown_prev:
         verdict, vst = _outcome(st["obs"])
         num = f"#{st.get('n')}".ljust(5)
