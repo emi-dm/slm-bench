@@ -11,7 +11,7 @@ import datetime as dt
 from html import escape
 
 # hue of each mode, taken from the logo gradient
-MODE_HUE = {"general": "#ff8a3d", "code": "#3b82f6", "tools": "#ec4899", "long": "#8b5cf6"}
+MODE_HUE = {"general": "#ff8a3d", "code": "#3b82f6", "tools": "#ec4899", "long": "#8b5cf6", "agent": "#10b981"}
 GRADIENT = ["#ffc93c", "#ffa83a", "#ff8a3d", "#ff6a5c", "#ff4f8b", "#d946ef", "#a855f7", "#8b5cf6", "#6366f1", "#3b82f6"]
 BARS = [3, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, 17, 16, 19, 18, 21, 20, 22]
 

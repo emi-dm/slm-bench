@@ -254,7 +254,7 @@ def modes() -> list[tuple[str, str]]:
     return [(m, info.get("en", m)) for m, info in cat.MODES.items()]
 
 
-MODE_CLASS = {"general": "gen", "code": "code", "tools": "tools", "long": "long"}
+MODE_CLASS = {"general": "gen", "code": "code", "tools": "tools", "long": "long", "agent": "agent"}
 
 
 def mode_keys(mode: str) -> list[str]:
@@ -424,8 +424,8 @@ def svg(entries: list[dict]) -> str:
     .n{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
     .m{fill:#59636e;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
     .v{fill:#1f2328;font:600 12px ui-monospace,Menlo,monospace}
-    .track{fill:#eaeef2}.gen{fill:#2da44e}.code{fill:#0969da}.tools{fill:#bf8700}.long{fill:#8250df}
-    @media (prefers-color-scheme: dark){.bg{fill:#0d1117}.t,.n,.v{fill:#e6edf3}.s,.m{fill:#9198a1}.track{fill:#21262d}.gen{fill:#3fb950}.code{fill:#58a6ff}.tools{fill:#d29922}.long{fill:#a371f7}}
+    .track{fill:#eaeef2}.gen{fill:#2da44e}.code{fill:#0969da}.tools{fill:#bf8700}.long{fill:#8250df}.agent{fill:#1a7f37}
+    @media (prefers-color-scheme: dark){.bg{fill:#0d1117}.t,.n,.v{fill:#e6edf3}.s,.m{fill:#9198a1}.track{fill:#21262d}.gen{fill:#3fb950}.code{fill:#58a6ff}.tools{fill:#d29922}.long{fill:#a371f7}.agent{fill:#2ea043}}
     """
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-label="SLM leaderboard">',
          f"<style>{css}</style>", f'<rect class="bg" width="{W}" height="{H}" rx="14"/>',

@@ -8,6 +8,14 @@
 </p>
 
 <p align="center">
+  <a href="docs/agent.md"><img src="https://img.shields.io/badge/agent%20mode-SWE--bench%20Lite-10b981" alt="Agent mode: SWE-bench Lite"></a>
+  <a href="https://mini-swe-agent.com"><img src="https://img.shields.io/badge/harness-mini--SWE--agent%202.4.6-3b82f6" alt="Harness: mini-SWE-agent 2.4.6"></a>
+  <a href="https://pi.dev"><img src="https://img.shields.io/badge/harness-Pi%201.5.2-ec4899" alt="Harness: Pi 1.5.2"></a>
+  <a href="https://opencode.ai"><img src="https://img.shields.io/badge/harness-OpenCode%201.19.5-ff8a3d" alt="Harness: OpenCode 1.19.5"></a>
+  <a href="docs/agent.md#where-it-runs"><img src="https://img.shields.io/badge/sandbox-no%20network-8b5cf6" alt="Sandbox without network"></a>
+</p>
+
+<p align="center">
   <img src="assets/demo.gif" alt="slmbench demo: check the model's memory with hf-mem, run the tool-calling mode with live progress, read the report, explore a failure and check the leaderboard" width="820"><br>
   <sub>A real session: LFM3-1.7B (Q8_0) on llama-server. Its memory with hf-mem, then tool calling (BFCL), the report, a failure and the leaderboard. <a href="assets/demo.mp4">Watch it as MP4</a> (sharper).</sub>
 </p>
@@ -15,21 +23,22 @@
 **slmbench** measures what **small language models** (≈ 1–14B parameters) can really do on your machine:
 
 - **Only public, established benchmarks** (IFEval, GSM8K, MATH-500, IFStruct, BFCL, RULER, HumanEval+, MBPP+, LiveCodeBench, CRUXEval, MultiPL-E…), with their official prompts and metrics, run by Hugging Face's lighteval.
-- **Four modes**: general, coding, tool calling and long context.
+- **Five modes**: general, coding, tool calling, long context and **agent**: the model as a coding agent on real GitHub issues (SWE-bench Lite), driven by **mini-SWE-agent**, **Pi** or **OpenCode**, in a sandbox without network.
 - **Your model, your server**: anything with an OpenAI-compatible API, local or hosted.
-- **A TUI** to pick the model, run, follow the progress live, read the reports and explore every failure, plus a **[leaderboard](leaderboard.md)** that updates itself after every run.
+- **A TUI** to pick the model, run, follow the progress live, read the reports and explore every failure (and every step of an agent), plus a **[leaderboard](leaderboard.md)** that updates itself after every run.
+- **Export as a dataset** (JSONL or Parquet): the task, the whole session, the model's solution and whether it's correct.
 - **Will it fit?** The memory a model needs, estimated with [hf-mem](https://github.com/alvarobartt/hf-mem) before you download it.
 
 ```text
    your model                               slmbench                          results
  +------------------+   OpenAI API   +-------------------------------+     +------------------+
  | llama-server     | <------------- | TUI / CLI                     | --> | report.md        |
- | Ollama           |    prompts     |  general | code | tools | long |     | leaderboard.md   |
+ | Ollama           |    prompts     |  general·code·tools·long·agent |     | leaderboard.md   |
  | LM Studio, vLLM  | -------------> |  lighteval (tasks, metrics)   |     | leaderboard.html |
  +------------------+    answers     +-------------------------------+     +------------------+
 ```
 
-**Contents** · [Quick start](#quick-start) · [Modes](#modes) · [The TUI](#the-tui) · [Will it fit? (hf-mem)](#will-it-fit-memory-estimates-with-hf-mem) · [Choosing the model](#choosing-the-model-to-evaluate) · [Leaderboard](#leaderboard) · [Cheat sheet](#cheat-sheet) · [Browsing pi.dev](#browsing-pidev-pi--chrome-devtools-mcp) · [Built on lighteval](#built-on-lighteval) · [Tips](#tips) · [Security](#security) · [Docs](#documentation)
+**Contents** · [Quick start](#quick-start) · [Modes](#modes) · [Agent mode](#agent-mode-swe-bench-lite) · [The TUI](#the-tui) · [Will it fit? (hf-mem)](#will-it-fit-memory-estimates-with-hf-mem) · [Choosing the model](#choosing-the-model-to-evaluate) · [Leaderboard](#leaderboard) · [Cheat sheet](#cheat-sheet) · [Browsing pi.dev](#browsing-pidev-pi--chrome-devtools-mcp) · [Built on lighteval](#built-on-lighteval) · [Tips](#tips) · [Security](#security) · [Docs](#documentation)
 
 ## Quick start
 
@@ -68,13 +77,18 @@ slmbench leaderboard                                           # ranking
 | `code` | Writing and reasoning about code in Python and five more languages, compiled and run against their tests | HumanEval+, MBPP+, LiveCodeBench, CRUXEval-O/I, MultiPL-E (JavaScript, C++, Java, Go, Rust) |
 | `tools` | Picking the right function and arguments, with the model's native `tool_calls` (as agents use it) | BFCL simple, multiple, parallel, parallel multiple |
 | `long` | Finding information hidden in long texts | RULER needle-in-a-haystack at 4k and 8k tokens |
-| `all` | Everything above | — |
+| `agent` | Working as a coding agent on real GitHub issues: explore the repo, edit, run, fix (in a sandbox without network) | SWE-bench Lite with mini-SWE-agent (bash only), Pi or OpenCode (tool calls) · [docs/agent.md](docs/agent.md) |
+| `all` | Everything above but `agent` (it runs on its own) | — |
 
 ```bash
 slmbench setup --mode code        # coding: builds the sandbox template (python, node, g++, javac, go, rustc inside it)
 slmbench run --mode code
 slmbench setup --mode tools       # BFCL: downloads the original files and prepares them
 slmbench run --benchmarks humaneval_plus,ifstruct --max-samples 50     # specific benchmarks
+slmbench setup --mode agent       # agent: the sandbox template (mini-SWE-agent, Pi, swebench) and SWE-bench Lite
+slmbench run --mode agent --max-samples 5
+slmbench traj <run>               # every step of the agent: reasoning, answer, command / tool call, output
+slmbench export --mode agent --format parquet   # runs as a dataset: task, session, solution, correct or not
 ```
 
 What you get from every run:
@@ -86,6 +100,30 @@ What you get from every run:
 - **Reasoning-aware**: a configurable reasoning budget; empty and truncated answers are counted and reported.
 
 Every benchmark, with what it measures, its dataset, metric, origin and **a real sample task** (the exact prompt the model receives), is in **[docs/benchmarks.md](docs/benchmarks.md)**, in `slmbench benchmarks <key>` and in the TUI (*3 · Benchmarks*).
+
+## Agent mode (SWE-bench Lite)
+
+The model gets a real GitHub issue and the repository at the commit before the fix, and works on it **as a coding agent**:
+it explores, runs commands, edits files and decides when it's done. Its patch is graded with the **official SWE-bench
+harness** (resolved = the tests of the real fix pass and none breaks). Pick the harness in a pop-up, or all three on the
+same tasks to compare a bash-only agent with two tool-calling ones:
+
+| Harness | How the model acts |
+|---|---|
+| [mini-SWE-agent](https://mini-swe-agent.com) | bash only: one command per answer, as text (no tool calls needed from the server) |
+| [Pi](https://pi.dev) | native tool calls: `read`, `write`, `edit`, `bash` |
+| [OpenCode](https://opencode.ai) | native tool calls: its `build` agent and its own tools (bash, read, edit, grep, glob…) |
+
+Everything runs in a Docker Sandbox **with no network at all**: the agent's commands run in the task's container, the
+model is reached through a relay that only lets chat completions through, and the task images are piped in from a
+separate sandbox. On Apple Silicon, 252 of the 300 tasks have an arm64 image (Epoch AI's builds). Every step is saved and
+can be explored in the TUI (**9 · Agent traces**), and runs can be exported as a dataset. Details: **[docs/agent.md](docs/agent.md)**.
+
+| | |
+|:-:|:-:|
+| <img src="assets/screenshots/agent-harness.png" alt="Picking the harness in a pop-up" width="420"><br>**2 · Run → Agent**: the harness in a pop-up, tasks, steps, tokens, time | <img src="assets/screenshots/agent-live.png" alt="Live view of an agent run" width="420"><br>**Live view**: every step of the agent as it happens |
+| <img src="assets/screenshots/agent-traces.png" alt="The steps of a task" width="420"><br>**9 · Agent traces**: every step of a task, with its tokens and exit code | <img src="assets/screenshots/agent-step.png" alt="One step: reasoning, tool call and output" width="420"><br>**One step**: reasoning, answer, command or tool call and its output (`n`/`p`) |
+| <img src="assets/screenshots/agent-report.png" alt="Agent run report" width="420"><br>**Report**: resolved per harness, patch applied, steps, FAIL_TO_PASS | <img src="assets/screenshots/agent-export.png" alt="Export as a dataset" width="420"><br>**Export** (`x` in Results): JSONL or Parquet |
 
 ## The TUI
 
@@ -110,6 +148,8 @@ The home screen always shows **the model you're evaluating**: its parameters, qu
 - **4 · Results**: `Enter` report, **`e` explore the answers** (benchmark → problems, failures first → prompt, answers and why each one failed; code is re-checked in the sandbox), **`l` errors and log**, **`r` rescore**, **`u` resume**, `Space` + `c` compare.
 - **7 · Chat with the model**: try a local GGUF by hand through `llama-cli`; `/exit` comes back.
 - **8 · Model memory**: see [below](#will-it-fit-memory-estimates-with-hf-mem).
+- **9 · Agent traces**: the agent-mode runs → their tasks (resolved or not, steps, cut answers) → every step: reasoning, answer, bash command or tool call with its arguments, and its output; `n`/`p` move between steps. Also `e` on an agent run in Results.
+- **4 · Results → `x`**: export the marked runs, this one, every agent run or every run as a dataset (JSONL or Parquet).
 - `L` switches between **English** and **Spanish**.
 - Works on macOS, Linux and **WSL** (Windows Terminal). It needs a UTF-8 locale for its borders and wordmark: if `LANG` is unset (common on WSL) it switches to `C.UTF-8` by itself, and with no UTF-8 locale at all it falls back to plain ASCII. The large wordmark shows from 80×37, a smaller one from 42×31; smaller terminals just skip it.
 
@@ -242,6 +282,13 @@ The coding benchmarks run code written by the model you're testing. slmbench nev
 
 Checked from inside the sandbox: model code runs as `slmrun0` with `sudo` refused and writes to `/usr`, `/etc`, the harness and other checks' folders denied; a fork bomb is contained and cleaned up; your home folder and files aren't visible, files written there don't appear on the host, HTTP requests are rejected, raw TCP connections deliver no data, UDP doesn't get out, and the only credential-looking variable the sandbox has is a placeholder (not your token), which the code doesn't even see.
 
+### Agent mode
+
+The agent's commands run in a container with no network inside a sandbox that has **no network either**: the model is
+reached through a relay over `sbx exec` that only lets chat completions through, to the model under test. The task images
+are fetched by a separate sandbox and piped in. Your API key never enters the sandbox. Details in
+[docs/agent.md](docs/agent.md#where-it-runs).
+
 ### Browsing pi.dev
 
 `slmbench browse` gives the model a real browser, so it is limited to one website: only `pi.dev` and its subdomains resolve
@@ -266,6 +313,7 @@ and never the system keyring, and Pi uses its own configuration folder (your `~/
 | [docs/adapting-a-benchmark.md](docs/adapting-a-benchmark.md) | How to adapt a Hugging Face benchmark so slmbench can run it |
 | [docs/lighteval.md](docs/lighteval.md) | How lighteval is integrated (custom model, no litellm) and version pitfalls |
 | [docs/llama-cpp.md](docs/llama-cpp.md) | Serving GGUF models with llama.cpp: getting models and an argument reference |
+| [docs/agent.md](docs/agent.md) | **Agent mode**: SWE-bench Lite with mini-SWE-agent, Pi or OpenCode, the no-network sandbox, arm64 images, trajectories |
 | [docs/browse.md](docs/browse.md) | `slmbench browse`: the model browses pi.dev with Pi + Chrome DevTools MCP (demo, or your tasks scored) |
 | [docs/omp.md](docs/omp.md) | Using local models as a coding agent with *oh my pi* |
 

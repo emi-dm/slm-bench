@@ -222,6 +222,15 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
 
     replay: answers of previous runs (responses.jsonl) reused when the request matches (resume); replay_only: never call the
     model (rescore); origin: the run this one resumes/rescores; env_override: generation parameters to reuse exactly."""
+    from . import agent
+    agentic = [sp for sp in specs if agent.is_agent_spec(sp)]
+    if agentic:
+        if len(agentic) != len(specs):
+            raise RuntimeError(T("El modo agente se ejecuta solo: lanza sus benchmarks en una ejecución aparte.",
+                                 "The agent mode runs on its own: run its benchmarks in a separate run."))
+        return agent.run(s, model, specs, on_line=on_line, cancel=cancel, origin=origin, server=server,
+                         reuse=Path(replay[0]).parent if replay and not replay_only else None,
+                         regrade=Path(replay[0]).parent if replay and replay_only else None)
     if not lighteval_available():
         raise RuntimeError(T("lighteval no está instalado: reinstala slmbench (en el repo: uv tool install --editable . o pip install -e .).", "lighteval is not installed: reinstall slmbench (in the repo: uv tool install --editable . or pip install -e .)."))
     if not specs:
@@ -384,7 +393,7 @@ def load_run(run_dir: str | Path) -> tuple[Settings, str, list[str], dict]:
     """(settings, model, specs, model.json env) of a past run, from its run.json and model.json."""
     import dataclasses
     d = Path(run_dir)
-    if not (d / "run.json").exists() or not (d / "responses.jsonl").exists():
+    if not (d / "run.json").exists() or not ((d / "responses.jsonl").exists() or (d / "tasks.jsonl").exists()):
         raise RuntimeError(T(f"{d.name} no guardó sus respuestas (es anterior a esta función): no se puede repuntuar ni reanudar.",
                              f"{d.name} didn't save its answers (it predates this feature): it can't be rescored or resumed."))
     info = json.loads((d / "run.json").read_text())
@@ -638,7 +647,7 @@ def list_runs(out_dir: str) -> list[dict]:
                      "kind": meta.get("kind", "run"), "incomplete": bool(meta.get("cancelled") or meta.get("returncode"))})
     done = {r["dir"] for r in runs}
     for rj in root.rglob("run.json"):                     # interrupted runs (no summary.json): listed so they can be resumed
-        if str(rj.parent) in done or not (rj.parent / "responses.jsonl").exists():
+        if str(rj.parent) in done or not ((rj.parent / "responses.jsonl").exists() or (rj.parent / "tasks.jsonl").exists()):
             continue
         try:
             info = json.loads(rj.read_text())
@@ -720,6 +729,18 @@ def setup(mode: str, on_line=print, download: bool = True) -> dict:
     c = cat.catalog()
     report_ = {"mode": mode, "benchmarks": keys, "missing_tools": {}, "downloaded": [], "failed": {}, "sandbox": None}
     on_line(T(f"Modo «{mode}»: {len(keys)} benchmarks", f"Mode '{mode}': {len(keys)} benchmarks"))
+    if mode == "agent":                                # its own sandbox template, dataset and task images
+        from . import agent
+        r = agent.setup(on_line=lambda l: on_line("  " + l), download=download)
+        report_["sandbox"] = r["template"]
+        if r["dataset"]:
+            report_["downloaded"] = keys
+        else:
+            report_["failed"] = {k: "SWE-bench Lite download failed" for k in keys}
+        why = agent.status(refresh=True)
+        if why:
+            report_["missing_tools"] = {k: [why] for k in keys}
+        return report_
     if any(c[k]["mode"] == "code" for k in keys):              # model code runs only in the sandbox: create / prepare it
         from . import sandbox
         on_line(T("Sandbox para el código del modelo (Docker Sandboxes):", "Sandbox for model code (Docker Sandboxes):"))

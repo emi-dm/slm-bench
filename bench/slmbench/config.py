@@ -34,7 +34,7 @@ class Settings:
     model: str = ""                      # vacío = el primero de /v1/models
     api_key: str = ""
     # --- ejecución (todo pasa por lighteval) ---
-    mode: str = "general"                # general | code | all (ver benchmarks/catalog.py)
+    mode: str = "general"                # general | code | tools | long | agent | all (ver benchmarks/catalog.py)
     benchmarks: list = field(default_factory=list)   # claves elegidas; vacío = todas las del modo
     ld_extra_tasks: str = ""             # otras tareas de lighteval, separadas por comas (p. ej. arc:easy|0)
     ld_max_samples: int = 20             # muestras por benchmark (0 = dataset completo)
@@ -48,6 +48,11 @@ class Settings:
     timeout: float = 600
     max_context: int = 32768
     extra_body: str = ""                 # JSON extra para cada petición
+    # --- modo agente (SWE-bench Lite con mini-SWE-agent / Pi) ---
+    agent_max_tokens: int = 16384        # máx. tokens por respuesta del agente (razonamiento incluido): un paso cortado no trae comando
+    agent_step_limit: int = 100          # llamadas al modelo por tarea como mucho
+    agent_timeout: int = 1800            # segundos por tarea para el agente (la evaluación va aparte)
+    agent_workers: int = 1               # tareas a la vez (máx. 3): cada una suma 4 GB de RAM al sandbox y su imagen al disco
     label: str = ""
     label_model: str = ""             # model the label was set for: a label never carries over to another model ('*' = any)
     out_dir: str = DEFAULT_OUT

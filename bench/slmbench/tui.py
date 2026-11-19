@@ -341,6 +341,43 @@ class UI:
                                                     if i == 0 else fill))
         self.put(y + hh - 2, x + ww - len(buttons) - 3, buttons, self.color(self.MUTED, 235))
 
+    def choose(self, title, items, sel=0, footer=""):
+        """A pop-up list over the current screen: items [(label, hint)]; ↑↓ move, Enter choose, q/Esc cancel.
+        Returns the index chosen or None. The hint of the highlighted item is shown under the list."""
+        footer = footer or T("↑↓ mover · Enter elegir · Esc cancelar", "↑↓ move · Enter choose · Esc cancel")
+        while True:
+            h, w = self.size()
+            ww = min(w - 4, max(48, max((len(_(l)) for l, _h in items), default=0) + 10, len(footer) + 6, len(_(title)) + 10))
+            hint = self._wrap(_(items[sel][1]), ww - 6)[:4] if items[sel][1] else []
+            hh = len(items) + len(hint) + 6
+            y, x = max(1, (h - hh) // 2), max(1, (w - ww) // 2)
+            fill = self.color(252, 235)
+            for i in range(hh):
+                self.put(y + i, x, " " * ww, fill)
+                if i:
+                    self.put(y + i, x + ww, " ", self.color(None, 233))
+            self.put(y + hh, x + 1, " " * ww, self.color(None, 233))
+            self.box(y, x, hh, ww, _(title), self.color(209, 235) | curses.A_BOLD)
+            for i, (label, _h) in enumerate(items):
+                cur = i == sel
+                self.put(y + 2 + i, x + 2, (" ▸ " if cur else "   ") + _(label).ljust(ww - 7)[: ww - 7],
+                         self.color(255, self.SEL_BG, True) if cur else fill)
+            for j, l in enumerate(hint):
+                self.put(y + 3 + len(items) + j, x + 4, l, self.color(self.MUTED, 235))
+            self.put(y + hh - 2, x + ww - len(footer) - 3, footer, self.color(self.MUTED, 235))
+            self.scr.refresh()
+            k = self.key()
+            if k in (curses.KEY_DOWN, "j"):
+                sel = (sel + 1) % len(items)
+            elif k in (curses.KEY_UP, "k"):
+                sel = (sel - 1) % len(items)
+            elif k in ("\n", "\r", curses.KEY_ENTER):
+                return sel
+            elif k in ("q", "Q", KEY_ESC):
+                return None
+            elif k == curses.KEY_RESIZE:
+                self.scr.erase()
+
     @staticmethod
     def _wrap(text, width=70):
         import textwrap
@@ -433,10 +470,11 @@ class UI:
         finally:
             curses.curs_set(0)
 
-    def md_pager(self, title, md, head=None, live=None):
+    def md_pager(self, title, md, head=None, live=None, keys=(), hint=""):
         """Muestra Markdown formateado (tablas con bordes, títulos y porcentajes en color).
         head(width) -> lines of (text, curses attr) drawn above the Markdown (e.g. a benchmark card's header).
-        live() -> (token, busy): content that is still loading; re-rendered when the token changes, polled while busy."""
+        live() -> (token, busy): content that is still loading; re-rendered when the token changes, polled while busy.
+        keys: extra keys that close the pager and are returned (e.g. n/p to move to the next item); hint: their help."""
         styles = {"h1": curses.color_pair(C_ACC) | curses.A_BOLD, "h2": curses.color_pair(C_ACC) | curses.A_BOLD, "h3": curses.A_BOLD,
                   "bold": curses.A_BOLD, "dim": curses.color_pair(C_DIM), "code": curses.color_pair(C_WARN), "quote": curses.color_pair(C_DIM),
                   "border": curses.color_pair(C_DIM), "thead": curses.color_pair(C_ACC) | curses.A_BOLD, "good": curses.color_pair(C_OK) | curses.A_BOLD,
@@ -477,11 +515,15 @@ class UI:
                             x += cw
                         col += cw
             more = max(0, len(lines) - body)
-            self.footer(f"↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir   [{min(top + 1, len(lines))}/{len(lines)}]")
+            self.footer((hint + " · " if hint else "") + T("↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir",
+                                                             "↑↓ PgUp PgDn scroll · ←→ horizontal · g/G top/end · q back")
+                        + f"   [{min(top + 1, len(lines))}/{len(lines)}]")
             self.scr.refresh()
             k = self.key(120 if busy else -1)
             if k is None:
                 continue
+            if k in keys:
+                return k
             if k in ("q", "Q", KEY_ESC):
                 return
             if k in (curses.KEY_DOWN, "j"):
@@ -894,10 +936,12 @@ class App:
                                                                            "Try it by hand in a conversation with llama cli (local GGUF)")),
                 ("8", T("Memoria del modelo (hf-mem)", "Model memory (hf-mem)"), T("Cuánta memoria necesita el modelo a evaluar (pesos + KV cache + overhead) y si cabe en este equipo, con hf-mem",
                                                                  "How much memory the model under test needs (weights + KV cache + overhead) and whether it fits on this machine, with hf-mem")),
+                ("9", T("Trazas del agente", "Agent traces"), T("Cada paso del modelo como agente (modo agente: mini-SWE-agent, Pi, OpenCode): razonamiento, respuesta, comando o tool call y su salida",
+                                                                 "Every step of the model as an agent (agent mode: mini-SWE-agent, Pi, OpenCode): reasoning, answer, command or tool call and its output")),
                 ("q", T("Salir", "Quit"), ""),
             ]
 
-        actions = [self.screen_model, self.screen_run, self.screen_benchmarks, self.screen_results, self.screen_leaderboard, self.screen_config, self.screen_chat, self.screen_memory_current, None]
+        actions = [self.screen_model, self.screen_run, self.screen_benchmarks, self.screen_results, self.screen_leaderboard, self.screen_config, self.screen_chat, self.screen_memory_current, self.screen_traces, None]
         while True:
             items = menu_items()
             ui = self.ui
@@ -944,7 +988,7 @@ class App:
                     ui.hintline(hint)
                 ui.put(yy, 4, f" {key} ", ui.color(ui.INK, 209, True) if cur else ui.color(209, 236, True))
                 ui.put(yy, 8, label, ui.color(255, bg, True) if cur else (curses.A_BOLD if i == 0 and not self.connected else 0))
-            ui.footer(T("↑↓ mover · Enter o 1-8 elegir · L idioma (EN/ES) · r reconectar · q salir", "↑↓ move · Enter or 1-8 select · L language (EN/ES) · r reconnect · q quit"))
+            ui.footer(T("↑↓ mover · Enter o 1-9 elegir · L idioma (EN/ES) · r reconectar · q salir", "↑↓ move · Enter or 1-9 select · L language (EN/ES) · r reconnect · q quit"))
             ui.scr.refresh()
             k = ui.key(250 if self._probing or self.memory_pending() else 1500)
             choice = None
@@ -962,7 +1006,7 @@ class App:
             elif k in ("q", "Q", KEY_ESC):
                 if self.quit():
                     return
-            elif isinstance(k, str) and k in "12345678" and k:
+            elif isinstance(k, str) and k in "123456789" and k:
                 choice = int(k) - 1
             elif k in ("\n", "\r", curses.KEY_ENTER):
                 choice = sel
@@ -1714,11 +1758,19 @@ class App:
             el = time.time() - a.get("started", time.time())
             tot, done = a.get("total") or 0, len(rows)
             eta = el / done * (tot - done) if done and tot and done < tot else 0
-            ok = [r for r in rows if "error" not in r]
+            agentic = bool(a.get("agent"))
+            calls = rows
+            if agentic:                         # rows = finished tasks; the model calls are in requests.jsonl
+                try:
+                    with open(Path(a["out"]) / "requests.jsonl") as fh:
+                        calls = [json.loads(l) for l in fh if l.strip()]
+                except (OSError, ValueError):
+                    calls = []
+            ok = [r for r in calls if "error" not in r]
             tps = [r["tps"] for r in ok if r.get("tps")]
             empty = sum(1 for r in ok if r.get("empty"))
             trunc = sum(1 for r in ok if r.get("finish") == "length")
-            errs = len(rows) - len(ok)
+            errs = len(calls) - len(ok)
             y = 2
             ui.put(y, 2, f"{T('Modelo', 'Model')}: ", curses.A_BOLD)
             ui.put(y, 12, f"{a.get('model', '?')}  ·  {a.get('base_url', '')}", curses.color_pair(C_ACC) | curses.A_BOLD)
@@ -1732,6 +1784,9 @@ class App:
                    + (f"  ·  ETA {int(eta // 60)}m{int(eta % 60):02d}s" if eta else "")
                    + (f"  ·  {sum(tps) / len(tps):.1f} tok/s" if tps else ""))
             warn = f"{T('vacías', 'empty')}: {empty}  ·  {T('truncadas', 'truncated')}: {trunc}  ·  {T('errores API', 'API errors')}: {errs}"
+            if agentic:
+                warn = (f"{T('llamadas al modelo', 'model calls')}: {len(calls)}  ·  {T('cortadas', 'cut')}: {trunc}  ·  "
+                        f"{T('errores API', 'API errors')}: {errs}  ·  {T('resueltas', 'resolved')}: {sum(bool(r.get('resolved')) for r in rows)}/{done}")
             ui.put(y + 5, 2, warn, curses.color_pair(C_WARN if (empty or trunc or errs) else C_DIM))
             # progreso por benchmark
             y += 7
@@ -1739,7 +1794,7 @@ class App:
             per = a.get("per_task") or {sp: None for sp in a.get("specs", [])}
             counts: dict[str, int] = {}
             for r in rows:
-                t = str(r.get("task") or "")
+                t = str(r.get("spec") or r.get("task") or "")
                 for sp in per:
                     if sp.split("|")[0] in t.split("|"):
                         counts[sp] = counts.get(sp, 0) + 1
@@ -1749,7 +1804,7 @@ class App:
             for i, (sp, n) in enumerate(per.items()):
                 if y + 1 + i >= h - 8:
                     break
-                c = counts.get(sp, 0) if any(r.get("task") for r in rows) or not rows else "?"
+                c = counts.get(sp, 0) if agentic or any(r.get("task") for r in rows) or not rows else "?"
                 full = isinstance(c, int) and bool(n) and c >= n
                 going = isinstance(c, int) and c and not full
                 mark = "✔" if full else ("▸" if going else "·")
@@ -1759,6 +1814,9 @@ class App:
                 if isinstance(c, int) and n:
                     ui.progress(yy, 7 + nw, 20, c / n)
                 ui.put(yy, 29 + nw, f"{c}/{n if n else '?'}", style)
+                if agentic and isinstance(c, int) and c:
+                    res = sum(bool(r.get("resolved")) for r in rows if r.get("spec") == sp)
+                    ui.put(yy, 36 + nw, f"✔ {res} " + T("resueltas", "resolved"), curses.color_pair(C_OK if res else C_DIM))
             y += 2 + min(len(per), max(0, h - 10 - y))
             # últimas respuestas o log
             room = h - y - 2
@@ -1772,6 +1830,18 @@ class App:
                     lines = [T("(sin log: ejecución lanzada con una versión anterior)", "(no log: run started by an older version)")]
                 for i, l in enumerate(lines[: max(0, room - 1)]):
                     ui.put(y + 1 + i, 2, l[: w - 4], curses.color_pair(C_DIM))
+            elif agentic:                       # the agent's latest steps and finished tasks, newest first
+                ui.section(y, 2, T("Últimos pasos del agente (l: log)", "Latest agent steps (l: log)"), min(w - 4, 100))
+                try:
+                    with open(Path(a["out"]) / "run.log", errors="replace") as fh:
+                        lines = [l.rstrip() for l in fh.read().splitlines()[-400:]
+                                 if " · #" in l or l.startswith(("✔", "✘", "→"))]
+                except OSError:
+                    lines = []
+                for i, l in enumerate(list(reversed(lines))[: max(0, room - 1)]):
+                    st = (curses.color_pair(C_OK) if l.startswith("✔") else curses.color_pair(C_BAD) if l.startswith("✘")
+                          else curses.color_pair(C_ACC) if l.startswith("→") else curses.color_pair(C_WARN) if " ✂ " in l else 0)
+                    ui.put(y + 1 + i, 2, l.strip()[: w - 4], st)
             else:
                 ui.section(y, 2, T("Últimas respuestas del modelo (l: log)", "Latest model answers (l: log)"), min(w - 4, 100))
                 for i, r in enumerate(list(reversed(rows))[: max(0, room - 1)]):
@@ -1800,7 +1870,10 @@ class App:
                 sel -= 1
             elif k in ("x", "X"):
                 if ui.confirm(T(f"¿Cancelar la ejecución de {a.get('model')} (PID {a['pid']})?", f"Cancel the run of {a.get('model')} (PID {a['pid']})?")):
-                    threading.Thread(target=engine.stop_process, args=(a["pid"],), daemon=True).start()
+                    if a.get("cancel_file"):    # agent runs live in slmbench's own process: ask it to stop (it removes its sandboxes)
+                        Path(a["cancel_file"]).touch()
+                    else:
+                        threading.Thread(target=engine.stop_process, args=(a["pid"],), daemon=True).start()
 
     # ---- leaderboard ----
     # brightness ramp of each mode's hue (xterm 256): a benchmark value goes from a dim tint to the full hue as it grows
@@ -2206,18 +2279,48 @@ class App:
                 Field("", T("Modo", "Mode"), "section"),
                 Field("mode", T("Modo de evaluación", "Evaluation mode"), "choice", s.mode,
                       [(m, f"{info[i18n.get_lang()]} · {info['desc_' + i18n.get_lang()]}") for m, info in cat.MODES.items()] + [("all", T("Todo", "Everything"))],
-                      hint=T("General · Programación (en el sandbox) · Herramientas (BFCL) · Contexto largo (RULER) · Todo",
-                             "General · Coding (in the sandbox) · Tool calling (BFCL) · Long context (RULER) · Everything")),
+                      hint=T("General · Programación (en el sandbox) · Herramientas (BFCL) · Contexto largo (RULER) · Agente (SWE-bench Lite) · "
+                             "Todo (salvo el agente)",
+                             "General · Coding (in the sandbox) · Tool calling (BFCL) · Long context (RULER) · Agent (SWE-bench Lite) · "
+                             "Everything (but the agent)")),
                 Field("", T("Benchmarks", "Benchmarks"), "section"),
             ]
-            for k in mode_keys:
+            agentic = s.mode == "agent"
+            if agentic:                                 # one benchmark per harness: picked in a pop-up
+                miss = cat.missing_tools(mode_keys[0])
+                names = ", ".join(catl[k]["harness_name"] for k in chosen) if len(chosen) < len(mode_keys) else T("todos", "all")
+                fields.append(Field("harness", "Harness: " + names + "  ▸" + (f"  ⚠ {miss[0]}" if miss else ""), "action", "",
+                                    hint=T("Enter: elegir el agente que usa el modelo (mini-SWE-agent, Pi, OpenCode o todos) · ? ficha",
+                                           "Enter: pick the agent the model uses (mini-SWE-agent, Pi, OpenCode or all) · ? card")))
+            for k in ([] if agentic else mode_keys):
                 v = catl[k]
                 miss = cat.missing_tools(k)
                 label = f"{v['name']}" + (f"  ⚠ {', '.join(m.split(' (')[0] for m in miss)}" if miss else "")
                 fields.append(Field(f"b:{k}", label, "bool", k in chosen,
                                     hint=(f"⚠ {T('falta', 'missing')}: {', '.join(miss)}  ·  " if miss else "")
                                     + f"{cat.describe(k, i18n.get_lang())}  ·  {v['n']:,} {T('tareas', 'tasks')} · `{v['metric']}` · ? = {T('ficha', 'card')}"))
-            fields += [
+            if agentic:
+                fields += [
+                    Field("", T("Opciones del agente", "Agent options"), "section"),
+                    Field("ld_max_samples", T("Tareas (0 = todas las que tienen imagen)", "Tasks (0 = every task with an image)"), "int", s.ld_max_samples,
+                          hint=T("Cada tarea tarda minutos (el agente da decenas de pasos y luego se pasan los tests): empieza con 5–20. "
+                                 "Siempre las mismas y en el mismo orden, mezclando proyectos.",
+                                 "Each task takes minutes (the agent takes dozens of steps, then the tests run): start with 5–20. "
+                                 "Always the same ones in the same order, mixing projects.")),
+                    Field("agent_max_tokens", T("Máx. tokens por respuesta", "Max tokens per answer"), "int", s.agent_max_tokens,
+                          hint=T("Razonamiento incluido. Si se corta, el paso no trae comando y se pierde.", "Reasoning included. If cut, the step has no command and is wasted.")),
+                    Field("reasoning_budget", T("Presupuesto de razonamiento", "Reasoning budget"), "int", s.reasoning_budget,
+                          hint=T("-1 = sin límite · 0 = sin razonar · N = tope de tokens de razonamiento por respuesta", "-1 = unlimited · 0 = no reasoning · N = max reasoning tokens per answer")),
+                    Field("temperature", T("Temperatura", "Temperature"), "float", s.temperature),
+                    Field("agent_step_limit", T("Máx. pasos por tarea", "Max steps per task"), "int", s.agent_step_limit,
+                          hint=T("Llamadas al modelo por tarea; al llegar, la tarea termina con lo que haya.", "Model calls per task; when reached, the task ends with what there is.")),
+                    Field("agent_timeout", T("Tiempo por tarea (s)", "Time per task (s)"), "int", s.agent_timeout,
+                          hint=T("Para el agente; la evaluación con los tests va aparte.", "For the agent; grading with the tests comes on top.")),
+                    Field("agent_workers", T("Tareas en paralelo", "Parallel tasks"), "int", s.agent_workers,
+                          hint=T("Como mucho 3. Cada una suma 4 GB de RAM al sandbox (y su imagen al disco); no más que los slots (-np) del servidor.",
+                                 "At most 3. Each one adds 4 GB of RAM to the sandbox (and its image to the disk); no more than the server slots (-np).")),
+                ]
+            fields += ([] if agentic else [
                 Field("ld_extra_tasks", T("Otras tareas de lighteval", "Other lighteval tasks"), "text", s.ld_extra_tasks,
                       hint=T("Separadas por comas, p. ej. aime24|0. Solo generativas.", "Comma-separated, e.g. aime24|0. Generative only.")),
                 Field("", T("Opciones", "Options"), "section"),
@@ -2234,6 +2337,7 @@ class App:
                              "5 = pass@1 and pass@5 (5× more requests for coding and tool calling) · 1 = pass@1 only, faster. "
                              "All at the temperature above: at 0 the 5 come out nearly identical and pass@5 ≈ pass@1.")),
                 Field("workers", T("Peticiones en paralelo", "Parallel requests"), "int", s.workers, hint=T("No más que los slots (-np) del servidor.", "No more than the server slots (-np).")),
+            ]) + [
                 Field("", T("Modelo a evaluar", "Model to evaluate"), "section"),
                 Field("", "", "info", f"{self.current_model() or '—'} @ {s.base_url}"),
                 Field("model", T("Cambiar el modelo a evaluar…", "Change the model to evaluate…"), "action", ""),
@@ -2245,14 +2349,18 @@ class App:
             def pull(fs):
                 for f in fs:
                     if f.key in ("ld_extra_tasks", "ld_max_samples", "ld_max_new_tokens", "reasoning_budget", "temperature", "workers",
-                                 "passk_n"):
+                                 "passk_n", "agent_max_tokens", "agent_step_limit", "agent_timeout", "agent_workers"):
                         setattr(s, f.key, f.value)
+                if agentic:                             # the harness is picked in its pop-up, not with checkboxes
+                    return
                 picked = [f.key[2:] for f in fs if f.key.startswith("b:") and f.value]
                 s.benchmarks = [] if set(picked) == set(mode_keys) else picked
 
             def explain_key(f):
                 if f.key.startswith("b:"):
                     self.show_card(f.key[2:])
+                elif f.key == "harness":
+                    self.show_card(chosen[0])
 
             def on_change(key, fs):
                 if key == "mode":
@@ -2273,6 +2381,8 @@ class App:
                 return
             if key == "model":
                 self.screen_model()
+            elif key == "harness":
+                self.pick_harness(mode_keys, chosen)
             elif key == "setup":
                 r = self.live_task(T(f"Preparando el modo {s.mode}", f"Preparing mode {s.mode}"), lambda on_line, cancel: engine.setup(s.mode, on_line=on_line))
                 if r["res"]:
@@ -2295,6 +2405,12 @@ class App:
                     ui.message(T(f"No hay conexión con {s.base_url}. Elige el modelo en «Modelo a evaluar».",
                                  f"No connection to {s.base_url}. Pick the model in \"Model to evaluate\"."), C_BAD)
                     continue
+                if agentic:
+                    why = cat.missing_tools(keys[0])
+                    if why:
+                        ui.message(T(f"El modo agente no está listo: {why[0]}. Usa «Preparar el modo».",
+                                     f"Agent mode isn't ready: {why[0]}. Use \"Prepare the mode\"."), C_BAD, "Sandbox")
+                        continue
                 if any(k in ("lcb",) or catl[k].get("language") for k in keys) and not ui.confirm(
                         T("Los benchmarks de código ejecutan el código que genera el modelo dentro del sandbox (sbx). ¿Continuar?",
                           "Coding benchmarks run model-generated code inside the sandbox (sbx). Continue?"), default=True):
@@ -2313,6 +2429,57 @@ class App:
                     ui.message(T(f"Peticiones fallidas: {meta['api_errors']}", f"Failed requests: {meta['api_errors']}") + "\n" + (meta.get("api_error_examples") or [""])[0][:200]
                                + "\n\n" + T("Detalle: Resultados → l (errores y log).", "Details: Results → l (errors and log)."), C_WARN)
                 ui.md_pager(f"{T('Informe', 'Report')} · {Path(out).name}", (Path(out) / "report.md").read_text())
+
+    def export_runs(self, runs: list[dict], sel: int, marked: set) -> None:
+        """Pop-ups: which runs (marked / this one / every agent run / every run) and the format; then the dataset file."""
+        from . import export
+        ui, s = self.ui, self.s
+        done = [r for r in runs if not r.get("incomplete")]
+        agentic = [r for r in done if (Path(r["dir"]) / "agent").is_dir()]
+        scopes = []
+        if marked:
+            scopes.append((T(f"Las {len(marked)} marcadas", f"The {len(marked)} marked runs"), [d for d in marked]))
+        scopes.append((T("Esta ejecución: ", "This run: ") + Path(runs[sel]["dir"]).name[:40], [runs[sel]["dir"]]))
+        if agentic:
+            scopes.append((T(f"Todas las del modo agente ({len(agentic)})", f"Every agent-mode run ({len(agentic)})"), [r["dir"] for r in agentic]))
+        scopes.append((T(f"Todas las ejecuciones terminadas ({len(done)})", f"Every finished run ({len(done)})"), [r["dir"] for r in done]))
+        hint = T("Una fila por intento: la tarea, la sesión completa (razonamiento, respuestas, tool calls y salidas), la solución "
+                 "(el parche en el modo agente) y si es correcta.",
+                 "One row per attempt: the task, the whole session (reasoning, answers, tool calls and outputs), the solution "
+                 "(the patch in the agent mode) and whether it's correct.")
+        i = ui.choose(T("Exportar como dataset", "Export as a dataset"), [(l, hint) for l, _d in scopes])
+        if i is None:
+            return
+        dirs = scopes[i][1]
+        f = ui.choose(T("Formato", "Format"), [
+            ("JSONL", T("Un objeto JSON por línea: fácil de leer y de procesar línea a línea.", "One JSON object per line: easy to read and stream.")),
+            ("Parquet", T("Columnar y comprimido (zstd): para pandas, DuckDB o subirlo a Hugging Face.", "Columnar and compressed (zstd): for pandas, DuckDB or the Hugging Face Hub."))])
+        if f is None:
+            return
+        fmt = ("jsonl", "parquet")[f]
+        res, err = self.busy(T("Exportando", "Exporting"), T(f"Leyendo {len(dirs)} ejecuciones…", f"Reading {len(dirs)} runs…"),
+                             lambda: export.export(dirs, fmt, None, s.out_dir, on_line=lambda _l: None))
+        if err:
+            if str(err) != T("cancelado", "cancelled"):
+                ui.message(str(err), C_BAD)
+            return
+        path, n = res
+        ui.message(T(f"✔ {n} filas → {path}", f"✔ {n} rows → {path}"), C_OK, T("Dataset exportado", "Dataset exported"))
+
+    def pick_harness(self, mode_keys: list[str], chosen: list[str]) -> None:
+        """Pop-up: which agent drives the model on SWE-bench Lite (one, or all of them on the same tasks)."""
+        catl = cat.catalog()
+        items = [(f"{catl[k]['harness_name']:<16} {catl[k]['harness_note_' + i18n.get_lang()]}", cat.describe(k, i18n.get_lang()))
+                 for k in mode_keys]
+        items.append((T("Todos", "All") + f"  ({len(mode_keys)}× " + T("tiempo", "time") + ")",
+                      T("Los tres harnesses sobre las mismas tareas: compara el mismo modelo con un agente solo-bash y dos con tool calls.",
+                        "The three harnesses on the same tasks: compares the same model with a bash-only agent and two tool-calling ones.")))
+        sel = len(mode_keys) if len(chosen) == len(mode_keys) else mode_keys.index(chosen[0])
+        i = self.ui.choose(T("Harness del agente", "Agent harness"), items, sel=sel)
+        if i is None:
+            return
+        self.s.benchmarks = [] if i == len(mode_keys) else [mode_keys[i]]
+        config.save(self.s)
 
     def show_card(self, key):
         from .benchmarks import explore
@@ -2368,7 +2535,7 @@ class App:
         return [fit(left[i] if i < len(left) else [], lw) + [(" ", 0), sep, (" ", 0)] + (right[i] if i < len(right) else [])
                 for i in range(rows)]
 
-    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141}    # the logo gradient, one hue per mode
+    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141, "agent": 78}    # the logo gradient, one hue per mode
 
     def card_head(self, key: str, width: int, rule: bool = True) -> list:
         """Styled header of a benchmark card: mode badge, name, a row of fact tiles, description, links."""
@@ -2530,6 +2697,102 @@ class App:
                 continue
             ui.md_pager(f"{task['name']} · #{smp['index']}", md)
 
+    # ---- trayectorias de agentes (mini-SWE-agent, Pi, OpenCode) ----
+    def screen_traces(self):
+        """9 · Agent traces: the runs of the agent mode (newest first) -> their tasks -> every step. x exports them."""
+        from . import trajectory as tr
+        ui, s = self.ui, self.s
+        sel = 0
+        while True:
+            runs, err = self.busy(T("Trazas del agente", "Agent traces"), T("Buscando ejecuciones del modo agente…", "Looking for agent-mode runs…"),
+                                  lambda: [r for r in engine.list_runs(s.out_dir) if tr.has_trajectories(r["dir"])])
+            if err:
+                return
+            if not runs:
+                ui.message(T("Aún no hay ejecuciones del modo agente. Lánzalas en «2 · Lanzar benchmarks» con el modo Agente.",
+                             "No agent-mode runs yet. Start one in \"2 · Run benchmarks\" with the Agent mode."), C_WARN, T("Trazas", "Traces"))
+                return
+            items = []
+            for r in runs:
+                heads = "  ".join(f"{(cat.catalog().get(cat.spec_to_key(t) or '', {}).get('harness_name') or t.split('|')[0])} {v * 100:.0f}%"
+                                  for t, v in r["heads"].items())
+                items.append((f"{r['date'][:16].replace('T', ' '):<16}  {_run_name(r)[:30]:<30}  "
+                              + (heads or T("incompleta", "incomplete")), r["dir"]))
+            k = ui.menu(T("Trazas del agente", "Agent traces"), items, sel=sel,
+                        sub=T("Elige una ejecución: sus tareas y cada paso del agente", "Pick a run: its tasks and every step of the agent"),
+                        footer=T("↑↓ mover · Enter abrir · q volver", "↑↓ move · Enter open · q back"))
+            if k is None:
+                return
+            sel = k
+            self.screen_trajectories(runs[k]["dir"])
+
+    def screen_trajectories(self, folder: str):
+        """Agent runs: tasks (resolved or not, steps, cut answers) -> the task's steps -> one step: reasoning, response,
+        bash command or tool call, and what came back. n/p move between steps without going back to the list."""
+        from . import trajectory as tr
+        ui = self.ui
+        tasks, err = self.busy(T("Trayectorias", "Trajectories"), T("Leyendo las trayectorias…", "Reading the trajectories…"),
+                               lambda: tr.find(folder))
+        if err:
+            if str(err) != T("cancelado", "cancelled"):
+                ui.message(f"{type(err).__name__}: {err}", C_BAD)
+            return
+        if not tasks:
+            ui.message(T("No hay trayectorias (*.traj.json, *.pi.jsonl) en esta carpeta.",
+                         "No trajectories (*.traj.json, *.pi.jsonl) in this folder."), C_WARN)
+            return
+        graded = [t for t in tasks if t["resolved"] is not None]
+        sub = (T(f"{sum(t['resolved'] for t in graded)}/{len(graded)} resueltas", f"{sum(t['resolved'] for t in graded)}/{len(graded)} resolved")
+               if graded else T("sin evaluar", "not graded")) + " · " + T("Enter: pasos de la tarea", "Enter: the task's steps")
+        sel = 0
+        while True:
+            i = ui.menu(T("Trayectorias", "Trajectories") + f" · {Path(folder).name}",
+                        [(tr.task_line(t), f"{t['agent']} · {t['path']}") for t in tasks], sel=sel, sub=sub)
+            if i is None:
+                return
+            sel = i
+            self._trajectory_task(folder, tasks[i])
+
+    def _trajectory_task(self, folder: str, task: dict):
+        from . import trajectory as tr
+        ui = self.ui
+        try:
+            t = tr.load_in(folder, task["path"])
+        except (OSError, ValueError) as e:
+            ui.message(f"{type(e).__name__}: {e}", C_BAD)
+            return
+        steps = t["steps"]
+        head = [(T("▸ Resumen: evaluación, parche final y tarea", "▸ Summary: grading, final patch and task"), ""),
+                (T("▸ Trayectoria completa (salidas largas recortadas)", "▸ Whole trajectory (long outputs clipped)"), "")]
+        items = head + [(tr.step_line(s, last=s is steps[-1]), T("🧠 razonamiento · ✂ cortada por max_tokens · rc = código de salida del comando",
+                                            "🧠 reasoning · ✂ cut by max_tokens · rc = the command's exit code")) for s in steps]
+        sel = 0
+        while True:
+            i = ui.menu(f"{t['id']} · {len(steps)} " + T("pasos", "steps"), items, sel=sel,
+                        sub=f"{t['agent']} · exit: {t['exit_status']} · " + T("Enter: ver el paso", "Enter: open the step"))
+            if i is None:
+                return
+            sel = i
+            if i == 0:
+                ui.md_pager(f"{t['id']} · " + T("resumen", "summary"), tr.task_markdown(t, task.get("report")))
+                continue
+            if i == 1:
+                ui.md_pager(f"{t['id']} · " + T("trayectoria", "trajectory"), tr.full_markdown(t, task.get("report")))
+                continue
+            n = i - len(head)
+            while 0 <= n < len(steps):
+                k = ui.md_pager(f"{t['id']} · " + T("paso", "step") + f" {n + 1}/{len(steps)}", tr.step_markdown(steps[n], last=n == len(steps) - 1),
+                                keys=("n", "p", "N", "P"),
+                                hint=T("n/p paso siguiente/anterior", "n/p next/previous step"))
+                if k in ("n", "N"):
+                    if n + 1 < len(steps):
+                        n += 1
+                elif k in ("p", "P"):
+                    n = max(0, n - 1)
+                else:
+                    break
+            sel = n + len(head) if 0 <= n < len(steps) else sel
+
     def _run_in_terminal(self, cmd: list[str], title: str):
         """Hands the terminal to an interactive program (curses suspended) and restores the TUI afterwards."""
         import signal as _signal
@@ -2629,8 +2892,8 @@ class App:
                     pct = f"{v * 100:.0f}%"
                     ui.put(y, x, pct, ui.color(78 if v >= 0.7 else 220 if v >= 0.4 else 203, bg, True))
                     x += len(pct) + 2
-            ui.footer(T("↑↓ mover · Enter informe · e respuestas · l errores/log · r repuntuar · u reanudar · Espacio marcar · c comparar · d borrar (marcadas) · q volver",
-                        "↑↓ move · Enter report · e answers · l errors/log · r rescore · u resume · Space mark · c compare · d delete (marked) · q back"))
+            ui.footer(T("↑↓ mover · Enter informe · e respuestas · l errores/log · r repuntuar · u reanudar · Espacio marcar · c comparar · x exportar · d borrar (marcadas) · q volver",
+                        "↑↓ move · Enter report · e answers · l errors/log · r rescore · u resume · Space mark · c compare · x export · d delete (marked) · q back"))
             ui.scr.refresh()
             k = ui.key(1000)
             if k in (curses.KEY_DOWN, "j"):
@@ -2648,7 +2911,11 @@ class App:
                 else:
                     ui.message(T("Ejecución incompleta: sin informe. Pulsa u para reanudarla.", "Incomplete run: no report. Press u to resume it."), C_WARN)
             elif k in ("e", "E"):
-                self.screen_review(runs[sel]["dir"])
+                from . import trajectory
+                if trajectory.has_trajectories(runs[sel]["dir"]):
+                    self.screen_trajectories(runs[sel]["dir"])
+                else:
+                    self.screen_review(runs[sel]["dir"])
             elif k in ("l", "L"):
                 ui.md_pager(f"{T('Errores y log', 'Errors and log')} · {Path(runs[sel]['dir']).name}", engine.errors_markdown(runs[sel]["dir"]))
             elif k in ("r", "R", "u", "U"):
@@ -2678,6 +2945,8 @@ class App:
                     ui.message(T("Marca al menos dos ejecuciones con Espacio.", "Mark at least two runs with Space."), C_WARN)
                 else:
                     ui.md_pager(T("Comparación", "Comparison"), engine.compare(dirs))
+            elif k in ("x", "X"):
+                self.export_runs(runs, sel, marked)
             elif k in ("d", "D"):
                 dirs = [r["dir"] for r in runs if r["dir"] in marked] or [runs[sel]["dir"]]   # the marked runs, else the one under the cursor
                 q = (T(f"¿Borrar {Path(dirs[0]).name}?", f"Delete {Path(dirs[0]).name}?") if len(dirs) == 1 else
@@ -2714,6 +2983,15 @@ def _utf8_locale() -> bool:
         except locale.Error:
             continue
     return False
+
+
+def run_trajectories(folder: str, settings=None):
+    """`slmbench traj FOLDER`: the trajectory explorer on its own."""
+    global ASCII_ONLY
+    ASCII_ONLY = not _utf8_locale()
+    s = settings or config.load()
+    i18n.set_lang(s.ui_lang)
+    curses.wrapper(lambda scr: App(scr, s).screen_trajectories(folder))
 
 
 def run_tui(settings=None):
