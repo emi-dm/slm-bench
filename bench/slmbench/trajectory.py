@@ -557,6 +557,146 @@ def live_markdown(rows: list[dict], key: str, iid: str, title: str, finished: bo
     return "\n".join(md)
 
 
+def _what(r: dict) -> str:
+    """One line for what an answer did: its bash command, or its tool call, or that it had none."""
+    for tc in r.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        args = fn.get("arguments") or ""
+        try:
+            a = json.loads(args) if isinstance(args, str) else args
+        except ValueError:
+            a = args
+        if isinstance(a, dict):
+            main = a.get("command") or a.get("filePath") or a.get("path") or a.get("pattern") or json.dumps(a, ensure_ascii=False)
+        else:
+            main = str(a)
+        return ("$ " if fn.get("name") == "bash" else f"{fn.get('name', '?')} ") + " ".join(str(main).split())
+    m = re.search(r"```(?:mswea_bash_command|bash)\s*\n(.*?)```", r.get("content") or "", re.S)
+    if m:
+        return "$ " + " ".join(m.group(1).split())
+    return T("(sin comando: respuesta de texto)", "(no command: a text answer)")
+
+
+def _outcome(items: list[dict]) -> tuple[str, str]:
+    """(short verdict, style) of what came back from a step."""
+    if not items:
+        return "", "dim"
+    text = "\n".join(it.get("content") or "" for it in items)
+    m = _RC_RE.search(text)
+    if m:
+        rc = int(m.group(1))
+        out = _OUT_RE.search(text)
+        n = len((out.group(1) if out else "").splitlines())
+        return (f"✔ {_n_lines(n)}" if rc == 0 else f"✘ rc {rc}"), ("good" if rc == 0 else "bad")
+    if any(it.get("role") == "user" for it in items) and not any(it.get("role") == "tool" for it in items):
+        return "↩ " + T("aviso del harness", "harness feedback"), "warn"
+    low = text.lower()
+    bad = low.startswith(("error", "traceback")) or "\nerror" in low[:400] or "failed" in low[:200]
+    return (("✘ " if bad else "✔ ") + _n_lines(len(text.splitlines()))), ("bad" if bad else "good")
+
+
+def _n_lines(n: int) -> str:
+    return f"{n} " + (T("línea", "line") if n == 1 else T("líneas", "lines"))
+
+
+def _prose(text: str, width: int) -> list[str]:
+    """Reasoning or an answer, wrapped to the width, without blank lines (every line on screen carries text)."""
+    import textwrap
+    out = []
+    for line in (text or "").splitlines():
+        if line.strip():
+            out += textwrap.wrap(line.strip(), max(20, width)) or [""]
+    return out
+
+
+def _fit(text: str, width: int) -> str:
+    text = text.replace("\t", "    ")
+    return text if len(text) <= width else text[: max(1, width - 1)] + "…"
+
+
+def live_lines(rows: list[dict], key: str, iid: str, title: str, finished: bool, width: int, height: int) -> list:
+    """The live session laid out to fit one screen (no scrolling): a header, the earlier steps one line each (what they ran
+    and how it went) and the current step in full: the end of its reasoning, the answer, the command and its output.
+    Returns md_pager lines: [[(text, style), …], …]."""
+    mine = [r for r in rows if r.get("key") == key and r.get("id") == iid]
+    steps: list[dict] = []
+    for r in mine:
+        if r.get("kind") == "obs":
+            if steps:
+                steps[-1]["obs"] += r.get("items") or []
+        else:
+            steps.append({**r, "obs": []})
+    W = max(30, width)
+    status = ("● " + T("terminada", "finished")) if finished else ("◉ " + T("en marcha", "running"))
+    head = f"{iid} · {title} · {len(steps)} " + T("llamadas al modelo", "model calls")
+    out = [[(_fit(head, W - len(status) - 2), "h2"), (" " * max(1, W - len(_fit(head, W - len(status) - 2)) - len(status)), "normal"),
+            (status, "good" if finished else "warn")]]
+    out.append([("─" * W, "border")])
+    if not steps:
+        out.append([(T("Esperando la primera respuesta del modelo…", "Waiting for the model's first answer…"), "dim")])
+        return out
+    cur, earlier = steps[-1], steps[:-1]
+    room = max(10, height - 3 - len(out))                       # lines the pager can show below the header
+    # the current step: up to ~2/3 of the screen; earlier steps: what's left (at least 3 lines)
+    cur_room = max(7, room - max(3, min(len(earlier) + 1, room // 3)))
+    blocks = []
+    if cur.get("reasoning"):
+        blocks.append(("🧠 " + T("razonamiento (final)", "reasoning (end)"), "dim", _prose(cur["reasoning"], W - 4), True))
+    if (cur.get("content") or "").strip():
+        blocks.append(("💬 " + T("respuesta", "answer"), "normal", _prose(cur["content"], W - 4), False))
+    blocks.append(("▶ " + T("acción", "action"), "code", [_what(cur)], False))
+    if cur["obs"]:
+        txt = "\n".join(it.get("content") or "" for it in cur["obs"])
+        m = _OUT_RE.search(txt)
+        body = (m.group(1) if m else txt).strip().splitlines() or [T("(sin salida)", "(no output)")]
+        verdict, vst = _outcome(cur["obs"])
+        blocks.append(("↩ " + T("salida", "output") + f" · {verdict}", vst, body, True))
+    else:
+        blocks.append(("↩ " + T("salida", "output"), "dim", [T("⏳ esperando a que termine y pida el siguiente paso…",
+                                                               "⏳ waiting for it to finish and ask for the next step…")
+                                                             if not finished else T("(la tarea terminó aquí)", "(the task ended here)")], False))
+    # share the lines: every block gets its heading; text lines go first to the action, then output, answer, reasoning
+    budget = cur_room - 1 - len(blocks)
+    want = {i: len(b[2]) for i, b in enumerate(blocks)}
+    give = {i: 0 for i in want}
+    order = [i for i, b in enumerate(blocks) if b[0].startswith("▶")] + \
+            [i for i, b in enumerate(blocks) if b[0].startswith("↩")] + \
+            [i for i, b in enumerate(blocks) if b[0].startswith("💬")] + \
+            [i for i, b in enumerate(blocks) if b[0].startswith("🧠")]
+    while budget > 0 and any(give[i] < want[i] for i in order):
+        for i in order:
+            if budget > 0 and give[i] < want[i]:
+                give[i] += 1
+                budget -= 1
+    cur_lines = [[(_fit(f"▌ {T('Paso', 'Step')} {cur.get('n')}" + (f" · {cur['ct']} tokens" if cur.get("ct") is not None else "")
+                        + (f" · finish {cur['finish']}" + (" ✂" if cur["finish"] == "length" else "") if cur.get("finish") else ""), W), "h2")]]
+    for i, (label, style, lines, tail) in enumerate(blocks):
+        n = give[i]
+        if n <= 0 and not label.startswith(("▶", "↩")):
+            continue
+        cut = len(lines) > n
+        shown = (lines[-n:] if tail else lines[:n]) if n else []
+        more = (f"  (+{len(lines) - n} " + (T("anteriores", "earlier") if tail else T("más", "more")) + ")") if cut and n else ""
+        cur_lines.append([(_fit(label + more, W), "bold")])
+        for l in shown:
+            cur_lines.append([("  │ ", "border"), (_fit(l, W - 4), "code" if style == "code" else "dim" if style == "dim" else "normal")])
+    # earlier steps, one line each (the most recent ones that fit)
+    list_room = max(2, room - len(cur_lines) - 1)
+    shown_prev = earlier[-(list_room - (1 if len(earlier) > list_room - 1 else 0)):] if earlier else []
+    if len(earlier) > len(shown_prev):
+        out.append([(f"  … {len(earlier) - len(shown_prev)} " + T("pasos anteriores (e: transcripción completa)",
+                                                                  "earlier steps (e: full transcript)"), "dim")])
+    for st in shown_prev:
+        verdict, vst = _outcome(st["obs"])
+        num = f"#{st.get('n')}".ljust(5)
+        cut = " ✂" if st.get("finish") == "length" else ""
+        what = _fit(_what(st), max(10, W - len(num) - len(verdict) - 4 - len(cut)))
+        out.append([(num, "dim"), (what, "normal"), (" " * max(1, W - len(num) - len(what) - len(verdict) - len(cut)), "normal"),
+                    (cut, "warn"), (verdict, vst)])
+    out.append([("─" * W, "border")])
+    return out + cur_lines
+
+
 def has_trajectories(folder: str | Path) -> bool:
     return bool(trajectory_files(folder))
 

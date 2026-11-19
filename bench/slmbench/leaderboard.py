@@ -221,6 +221,13 @@ def record(s: Settings, meta: dict, summary: dict) -> dict | None:
         e["benchmarks"][key] = {"metric": mname, "value": m["value"], "stderr": m.get("stderr"), "n": n, "full": full,
                                 "date": meta["date"][:10], "temperature": meta.get("temperature"), "reasoning_budget": meta.get("reasoning_budget", -1),
                                 "max_tokens": cat.effective_max_tokens(key, meta.get("max_new_tokens") or 0) or meta.get("max_new_tokens")}
+        if c.get(key, {}).get("mode") == "agent":           # agent mode: which harness, its version and how the patches went
+            e["benchmarks"][key].update({
+                "harness": c[key].get("harness"), "harness_version": (meta.get("harness_versions") or {}).get(c[key].get("harness")),
+                "patch_applied": (metrics.get("patch_applied") or {}).get("value"),
+                "submitted": (metrics.get("submitted") or {}).get("value"),
+                "step_limit": meta.get("step_limit"), "dataset": (meta.get("dataset") or {}).get("revision"),
+                "arch": meta.get("arch")})
         if c.get(key, {}).get("passk"):                     # programación: pass@5 y cómo se muestreó
             p5 = metrics.get("pass@5") or {}
             e["benchmarks"][key].update({"pass5": p5.get("value"), "pass5_stderr": p5.get("stderr"),
@@ -292,6 +299,53 @@ def ranked(entries: list[dict], mode: str) -> list[tuple[dict, dict]]:
     rows = [r for r in rows if r[1]["n"]]
     rows.sort(key=lambda r: (0 if r[1]["ranked"] else 1 if r[1]["complete"] else 2, -(r[1]["score"] or 0), r[0]["name"].lower()))
     return rows
+
+
+# ---------------------------------------------------------------------------------------------
+# Harnesses (agent mode): the same benchmark driven by different agents
+# ---------------------------------------------------------------------------------------------
+def harness_keys() -> list[str]:
+    from .benchmarks import catalog as cat
+    return cat.mode_benchmarks("agent")
+
+
+def has_harnesses(entries: list[dict]) -> bool:
+    return any(k in e["benchmarks"] for e in entries for k in harness_keys())
+
+
+def harness_table(entries: list[dict]) -> list[dict]:
+    """One row per harness: models measured, mean resolved over them, the best model, its version and how it acts."""
+    from .benchmarks import catalog as cat
+    c = cat.catalog()
+    out = []
+    for k in harness_keys():
+        got = [(e, e["benchmarks"][k]) for e in entries if (e["benchmarks"].get(k) or {}).get("value") is not None]
+        vals = [r["value"] for _, r in got]
+        best = max(got, key=lambda x: (x[1]["value"], x[1].get("full", False)), default=None)
+        out.append({"key": k, "name": c[k].get("harness_name", k), "harness": c[k].get("harness"),
+                    "note_en": c[k].get("harness_note_en", ""), "note_es": c[k].get("harness_note_es", ""),
+                    "version": next((r.get("harness_version") for _, r in sorted(got, key=lambda x: x[1].get("date") or "", reverse=True)
+                                     if r.get("harness_version")), ""),
+                    "models": len(got), "mean": sum(vals) / len(vals) if vals else None,
+                    "best": ({"name": best[0]["name"], "quant": best[0]["meta"].get("quant", ""), "value": best[1]["value"],
+                              "full": best[1].get("full"), "n": best[1].get("n")} if best else None)})
+    return out
+
+
+def _harness_results(e: dict) -> list[tuple[str, float]]:
+    return [(k, e["benchmarks"][k]["value"]) for k in harness_keys() if (e["benchmarks"].get(k) or {}).get("value") is not None]
+
+
+def best_harness(e: dict) -> tuple[str, float] | None:
+    """The harness with which this model resolves the most tasks: (benchmark key, value); None if none resolves any."""
+    got = [x for x in _harness_results(e) if x[1] > 0]
+    return max(got, key=lambda x: x[1]) if got else None
+
+
+def harness_rows(entries: list[dict]) -> list[dict]:
+    """Models with at least one harness measured, best first (by their best harness)."""
+    rows = [e for e in entries if _harness_results(e)]
+    return sorted(rows, key=lambda e: (-max(v for _k, v in _harness_results(e)), e["name"].lower()))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -370,6 +424,8 @@ def markdown(entries: list[dict]) -> str:
         L += ["", f"> **Score** = mean of the {title.lower()} benchmarks (headline metric of each).{note} Medals only go to rows with every "
               "benchmark of the mode measured on the full set; the rest are listed below them: ⚠️ `k/N` = only k of the N benchmarks "
               "measured (its score averages a different set, not comparable), `partial` / `n=` = run on a sample (indicative only).", ""]
+    if has_harnesses(entries):
+        L += _harness_markdown(entries)
     groups: dict[str, list] = {}
     for e in entries:
         groups.setdefault(e["name"], []).append(e)
@@ -405,6 +461,34 @@ def markdown(entries: list[dict]) -> str:
     L += ["", "---", "", "<sub>Generated automatically by <code>slmbench</code> after every run. Comparisons are valid between models measured on the same "
           "machine and settings; partial runs (n=…) have large error bars.</sub>", ""]
     return "\n".join(L)
+
+
+def _harness_markdown(entries: list[dict]) -> list[str]:
+    """## Harnesses: the agent mode seen from the agents' side (which harness gets the most out of the models)."""
+    from .benchmarks import catalog as cat
+    c = cat.catalog()
+    hk = [h for h in harness_table(entries) if h["models"]]
+    L = ["## Harnesses", "",
+         "SWE-bench Lite (resolved) with each agent harness: the same model can solve very different numbers of tasks "
+         "depending on the agent that drives it.", "",
+         "| Harness | Version | How the model acts | Models | Mean resolved | Best model |", "|---|:-:|---|:-:|:--|---|"]
+    for h in sorted(hk, key=lambda h: -(h["mean"] or 0)):
+        b = h["best"]
+        best = (f"**{b['name']}** {b['quant']} · {pct(b['value'], 1)}" + ("" if b.get("full") else f" <sub>n={b['n']}</sub>")) if b else "–"
+        L.append(f"| **{h['name']}** | {h['version'] or '–'} | {h['note_en']} | {h['models']} | "
+                 f"{dot(h['mean'])} **{pct(h['mean'], 1)}** `{bar(h['mean'])}` | {best} |")
+    keys = [h["key"] for h in hk]
+    L += ["", "| Model | Quant | " + " | ".join(c[k].get("harness_name", k) for k in keys) + " | Best harness |",
+          "|---|:-:|" + ":-:|" * len(keys) + ":-:|"]
+    for e in harness_rows(entries):
+        bk = (best_harness(e) or (None, 0))[0]
+        cells = [("**" + cell(e, k) + "**" if k == bk else cell(e, k)) for k in keys]
+        L.append(f"| **{e['name']}** | {e['meta'].get('quant', '–')} | " + " | ".join(cells)
+                 + f" | {c[bk].get('harness_name', bk) if bk else '–'} |")
+    L += ["", "> Resolved = the tests of the real fix pass and none breaks (official SWE-bench harness). **Mean resolved** "
+          "averages the models measured with that harness; compare harnesses on the same models and task set (`n=` = a sample "
+          "of the tasks; on arm64 at most 252 of the 300 have an image).", ""]
+    return L
 
 
 def svg(entries: list[dict]) -> str:

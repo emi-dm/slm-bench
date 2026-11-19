@@ -67,6 +67,44 @@ def _podium(rows, mode: str) -> str:
     return f'<div class="podium">{"".join(cards)}</div>'
 
 
+def _harness_panel(hk: list[dict], rows: list[dict], c: dict) -> str:
+    """The Harnesses tab: a card per agent harness (how the model acts, mean resolved, best model) and the models × harnesses
+    table with each model's best harness highlighted."""
+    from . import leaderboard as lb
+    cards = []
+    for h in sorted(hk, key=lambda h: -(h["mean"] or 0)):
+        b = h["best"]
+        best = (f'<span class="hbest">best: <b>{_name(b["name"])}</b> {escape(b["quant"])} · {_pct(b["value"])}'
+                + ("" if b.get("full") else f' <i>n={b["n"]}</i>') + "</span>") if b and b["value"] else ""
+        cards.append(
+            f'<article class="pod harness" style="--v:{(h["mean"] or 0):.4f}"><div class="podtop"><span class="podplace">harness</span>'
+            + (f'<span class="hver">v{escape(h["version"])}</span>' if h["version"] else "") + "</div>"
+            f'<h3 class="podname">{escape(h["name"])}</h3><div class="facts"><span>{escape(h["note_en"])}</span></div>'
+            f'<div class="podscore"><b>{_pct(h["mean"])}</b><span>mean resolved · {h["models"]} model{"s" if h["models"] != 1 else ""}</span></div>'
+            f'<span class="meter"></span>{best}</article>')
+    keys = [h["key"] for h in hk]
+    heads = [("Model", "model")] + [(c[k].get("harness_name", k), "num") for k in keys] + [("Best harness", "num")]
+    th = "".join(f'<th class="{cls}" scope="col"><button type="button">{escape(x)}</button></th>' for x, cls in heads)
+    body = []
+    for e in rows:
+        bk = (lb.best_harness(e) or (None, 0))[0]
+        tds = [f'<td class="model" data-v="{escape(e["name"].lower())}"><span class="name">{_name(e["name"])}</span>'
+               f'<span class="facts">{"".join(f"<span>{escape(str(x))}</span>" for x in _facts(e["meta"]))}</span></td>']
+        for k in keys:
+            r = e["benchmarks"].get(k)
+            td = _cell(r["value"], "" if r.get("full") else f"n={r['n']}") if r else _cell(None)
+            tds.append(td.replace('<td class="num"', '<td class="num hwin"', 1) if k == bk else td)
+        name = c[bk].get("harness_name", bk) if bk else "–"
+        tds.append(f'<td data-v="{escape(name)}"><span class="hpick">{escape(name)}</span></td>')
+        body.append('<tr class="ranked">' + "".join(tds) + "</tr>")
+    return ('<div class="intro"><h2>Harnesses</h2><p>SWE-bench Lite with each agent harness: the same model can resolve very '
+            'different numbers of tasks depending on the agent that drives it. Resolved = the tests of the real fix pass and '
+            'none breaks (official SWE-bench harness). Mean resolved averages the models measured with that harness; compare '
+            'them on the same models and task set (n = a sample of the tasks).</p></div>'
+            f'<div class="podium">{"".join(cards)}</div>'
+            f'<div class="scroll card"><table><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>')
+
+
 def _tip(rows, mode: str):
     """Stats of a model in this mode, for the tooltip of the charts: rank, score, pass@5, speed, facts and every benchmark."""
     from . import leaderboard as lb
@@ -168,6 +206,15 @@ def page(entries: list[dict]) -> str:
             + _podium(rows, mode) + _charts(rows, mode, title) +
             f'<div class="scroll card"><table><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div></section>')
 
+    if lb.has_harnesses(entries):                     # Harnesses: the agent mode seen from the agents' side
+        hue = MODE_HUE.get("agent", "#10b981")
+        hk = [h for h in lb.harness_table(entries) if h["models"]]
+        hrows = lb.harness_rows(entries)
+        tabs.append(f'<button type="button" role="tab" id="tab-harness" aria-controls="p-harness" data-mode="harness" '
+                    f'style="--hue:{hue}"><span class="dot"></span>Harnesses<span class="count">{len(hk)}</span></button>')
+        panels.append(f'<section class="panel" role="tabpanel" id="p-harness" aria-labelledby="tab-harness" style="--hue:{hue}">'
+                      + _harness_panel(hk, hrows, c) + "</section>")
+
     details = []
     for e in sorted(entries, key=lambda x: x["name"].lower()):
         m, b = e["meta"], e["benchmarks"].values()
@@ -265,7 +312,11 @@ header{padding:52px 0 34px}
 .pod{position:relative;overflow:hidden;background:var(--paper);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:18px 20px 20px}
 .pod::before{content:"";position:absolute;inset:0 0 auto 0;height:90px;opacity:.5;pointer-events:none;
   background:radial-gradient(80% 100% at 0% 0%,color-mix(in srgb,var(--m) 45%,transparent),transparent 70%)}
-.pod.gold{--m:#ffc93c}.pod.silver{--m:#b8bfd6}.pod.bronze{--m:#e0824a}
+.pod.gold{--m:#ffc93c}.pod.silver{--m:#b8bfd6}.pod.bronze{--m:#e0824a}.pod.harness{--m:var(--hue)}
+.hver{margin-left:auto;font:600 12px var(--body);color:var(--mut);background:var(--soft);border-radius:20px;padding:2px 9px}
+.hbest{display:block;margin-top:12px;font-size:13px;color:var(--mut)}.hbest b{color:var(--ink);font-weight:700}.hbest i{font-style:normal;opacity:.75}
+td.hwin .chip{box-shadow:0 0 0 2px var(--hue);font-weight:800}
+.hpick{font:600 13px var(--body);background:color-mix(in srgb,var(--hue) 16%,transparent);border-radius:20px;padding:3px 10px}
 .podtop{position:relative;display:flex;align-items:center;gap:10px}
 .podplace{font:600 12px var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
 .podname{position:relative;font:600 19px/1.25 var(--display);letter-spacing:-.015em;margin:14px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -29,6 +29,7 @@ DEFAULT_OUT = _default_out()
 @dataclass
 class Settings:
     ui_lang: str = "en"                  # idioma de la TUI: en | es
+    splash: bool = True                  # pantalla de carga animada al abrir la TUI (también SLMBENCH_NO_SPLASH=1)
     # --- destino del bench ---
     base_url: str = "http://127.0.0.1:8080/v1"
     model: str = ""                      # vacío = el primero de /v1/models

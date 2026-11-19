@@ -119,8 +119,10 @@ what came back (`n`/`p` move between steps). `e` on an agent run in *Results* op
 each harness's progress and the agent's latest steps; `x` there asks the run to stop (it removes its sandboxes).
 
 **Watching the harness live.** `w` (on the run screen, or in the live view) opens the session of the task being solved,
-updated as it happens: every answer of the model with its reasoning and its command or tool call, and what came back.
-It follows the last step (`↑` stops following, `G` resumes; `t` picks another task when several run in parallel). The
+updated as it happens and laid out to fit one screen, so there's nothing to scroll: the earlier steps one line each (the
+command or tool call, and how it went: ✔/✘ and the size of its output) and the current step in full (the end of its
+reasoning, the answer, the action and its output, or "waiting" while it runs). `e` switches to the whole transcript
+(scrollable, following the last step), `t` picks another task when several run in parallel. The
 harnesses write their own trajectory only when a task ends, so this view is built from what the relay sees: each answer,
 and the outputs of the previous step, which travel in the next request (`answers.jsonl`, entries with `"kind": "obs"`). `u` resumes an interrupted run (finished tasks are kept) and `r`
 grades the saved patches again without calling the model.

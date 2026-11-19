@@ -791,6 +791,7 @@ class App:
         self._probing = False
         self._probed_at = 0.0
         self.status_gen = 0                       # +1 each time the server status is updated (screens redraw on change)
+        self._prewarmed = threading.Event()
         threading.Thread(target=self._prewarm, daemon=True).start()
 
     # ---- estado del modelo a evaluar ----
@@ -865,6 +866,102 @@ class App:
                 sandbox.prune()
         except Exception:
             pass
+        finally:
+            self._prewarmed.set()
+
+    def splash(self):
+        """The loading screen: the wordmark revealed with a light sweep in the logo's gradient, the benchmark bars dancing,
+        the tagline typed out, and the real start-up work with a spinner each (the model server, the sandboxes, the
+        leaderboard). As long as that work takes (1.6 s at least, 5 s at most); any key skips it."""
+        ui = self.ui
+        h, w = ui.size()
+        if (not getattr(self.s, "splash", True) or os.environ.get("SLMBENCH_NO_SPLASH") or ASCII_ONLY or h < 20 or w < 60
+                or curses.COLORS < 256):
+            return
+        import math
+        steps = [(T("Conectando con el servidor del modelo", "Connecting to the model server"), lambda: (self._probe(), self.connected)[1]),
+                 (T("Comprobando los sandboxes", "Checking the sandboxes"), lambda: self._prewarmed.wait(6)),
+                 (T("Cargando el leaderboard", "Loading the leaderboard"), lambda: bool(leaderboard.load_entries(self.s)) or True)]
+        done: list = [None] * len(steps)
+
+        def run(i, fn):
+            try:
+                done[i] = bool(fn())
+            except Exception:  # noqa: BLE001 - the splash never stops slmbench from opening
+                done[i] = False
+        for i, (_l, fn) in enumerate(steps):
+            threading.Thread(target=run, args=(i, fn), daemon=True).start()
+        G = art.BAR_GRADIENT
+        t0, MIN, MAX, held = time.time(), 1.6, 5.0, None
+        while True:
+            h, w = ui.size()
+            scale = 2 if w >= art.wordmark_width(scale=2) + 6 and h >= 30 else 1
+            rows, ww = art.wordmark(scale=scale), art.wordmark_width(scale=scale)
+            total = len(rows) + 9 + len(steps)
+            y0, x0 = max(1, (h - total) // 2), max(0, (w - ww) // 2)
+            t = time.time() - t0
+            ui.scr.erase()
+            # the wordmark, revealed left to right; the edge of the reveal and a later sweep glow in the gradient
+            reveal = ww * min(1.0, t / 0.75)
+            sweep = (t - 0.9) / 0.7 * (ww + 16) - 8 if t > 0.9 else -99
+            for i, segs in enumerate(rows):
+                xx = 0
+                for text, key in segs:
+                    fg, bold = art.PALETTE[key]
+                    for j, ch in enumerate(text):
+                        c = xx + j
+                        if ch == " " or c >= reveal:
+                            continue
+                        edge = reveal - c < 5 and t < 0.85
+                        glow = abs(c - sweep) < 3
+                        col = G[(c + int(t * 18)) % len(G)] if edge else (231 if glow else fg)
+                        ui.put(y0 + i, x0 + c, ch, ui.color(col, None, bold or glow))
+                    xx += len(text)
+            # the benchmark bars, growing then dancing
+            by = y0 + len(rows) + 1
+            grow = min(1.0, t / 0.6)
+            levels = "▁▂▃▄▅▆▇█"
+            for x in range(ww):
+                v = (0.5 + 0.3 * math.sin(x * 0.55 + t * 5.5) + 0.2 * math.sin(x * 1.7 - t * 3.7)) * grow
+                ui.put(by, x0 + x, levels[max(0, min(7, int(v * 8)))], ui.color(G[int(x * (len(G) - 1) / max(1, ww - 1))]))
+            # the tagline, typed out
+            tag = T(art.TAGLINE_ES, art.TAGLINE) if hasattr(art, "TAGLINE_ES") else art.TAGLINE
+            n = int(len(tag) * min(1.0, max(0.0, (t - 0.45) / 0.8)))
+            ui.put(by + 2, max(0, (w - len(tag)) // 2), tag[:n] + ("▌" if n < len(tag) and int(t * 6) % 2 == 0 else ""),
+                   ui.color(250) | _italic())
+            # the real start-up work
+            lw = max(len(l) for l, _f in steps) + 4
+            sx, sy = max(0, (w - lw) // 2), by + 4
+            for i, (label, _f) in enumerate(steps):
+                st = done[i]
+                if st is None:
+                    mark, col = SPIN[int(t * 12) % len(SPIN)], 209
+                elif st:
+                    mark, col = "✔", 78
+                else:
+                    mark, col = "○", 220
+                ui.put(sy + i, sx, mark, ui.color(col, None, True))
+                ui.put(sy + i, sx + 2, label, ui.color(255 if st is not None else 250))
+            bw = min(44, w - 8)
+            frac = min(1.0, 0.75 * sum(d is not None for d in done) / len(done) + 0.25 * min(1.0, t / MIN))
+            px = max(0, (w - bw) // 2)
+            for x in range(bw):
+                filled = x < int(bw * frac)
+                ui.put(sy + len(steps) + 1, px + x, "━" if filled else "─",
+                       ui.color(G[int(x * (len(G) - 1) / max(1, bw - 1))] if filled else 238))
+            hint = T("cualquier tecla para saltar", "any key to skip")
+            ui.put(h - 2, max(0, (w - len(hint)) // 2), hint, ui.color(240))
+            ui.scr.refresh()
+            finished = all(d is not None for d in done) and t >= MIN
+            if finished and held is None:
+                held = time.time()
+            if (held and time.time() - held > 0.35) or t >= MAX:
+                break
+            k = ui.key(33)
+            if k is not None and k != curses.KEY_RESIZE:
+                break
+        ui.scr.clear()                              # full repaint next: curses would otherwise leave splash cells behind
+        ui.scr.refresh()
 
     def current_model(self) -> str:
         return self.s.model or (self.models_seen[0] if self.models_seen else "")
@@ -1172,6 +1269,7 @@ class App:
                       hint='p. ej. {"chat_template_kwargs":{"enable_thinking":false}} para desactivar razonamiento en modelos que lo permiten'),
                 Field("", "Interfaz", "section"),
                 Field("ui_lang", "Idioma de la interfaz", "choice", s.ui_lang, [("en", "English"), ("es", "Español")], hint="También con la tecla L en el menú principal."),
+                Field("splash", T("Pantalla de carga animada al abrir", "Animated loading screen at start"), "bool", s.splash),
                 Field("", "Salida", "section"),
                 Field("out_dir", "Carpeta de resultados", "text", s.out_dir),
                 Field("leaderboard_auto", T("Añadir cada ejecución al leaderboard", "Add every run to the leaderboard"), "bool", s.leaderboard_auto),
@@ -1900,13 +1998,13 @@ class App:
 
     # ---- leaderboard ----
     # brightness ramp of each mode's hue (xterm 256): a benchmark value goes from a dim tint to the full hue as it grows
-    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141)}
+    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141), 78: (65, 71, 78), 43: (30, 37, 43)}
     LB_MEDAL = (220, 252, 173)                     # gold, silver, bronze
 
     @staticmethod
     def _lb_short(name: str) -> str:
         """Column title of a benchmark: drops the family prefix shared by the whole mode (MultiPL-E, BFCL, RULER NIAH)."""
-        for pre in ("MultiPL-E ", "BFCL ", "RULER NIAH "):
+        for pre in ("MultiPL-E ", "BFCL ", "RULER NIAH ", "SWE-bench Lite · "):
             name = name.replace(pre, "")
         return {"JavaScript": "JS", "LiveCodeBench": "LiveCode", "Parallel multiple": "Par. multi"}.get(name, name)
 
@@ -1944,6 +2042,8 @@ class App:
             lang = i18n.get_lang()
             tabs = [(m, cat.MODES[m].get(lang, t), lb.ranked(entries, m)) for m, t in lb.modes()]
             tabs = [t for t in tabs if t[2]]
+            if lb.has_harnesses(entries):                  # the agent mode seen from the agents' side
+                tabs.append(("harness", "Harnesses", [h for h in lb.harness_table(entries) if h["models"]]))
             h, w = ui.size()
             ui.scr.erase()
             ui.header("Leaderboard")
@@ -2001,10 +2101,36 @@ class App:
             ui.put(3, x0, "─" * W, ui.color(ui.RULE))
             if under:
                 ui.put(3, under[0], "━" * under[1], ui.color(hue, None, True))
-            desc = cat.MODES[mode].get(f"desc_{lang}") or cat.MODES[mode].get("desc_en", "")
+            desc = (cat.MODES[mode].get(f"desc_{lang}") or cat.MODES[mode].get("desc_en", "")) if mode in cat.MODES else \
+                T("SWE-bench Lite con cada harness: el mismo modelo resuelve más o menos tareas según el agente que lo lleve.",
+                  "SWE-bench Lite with each harness: the same model resolves more or fewer tasks depending on the agent that drives it.")
             right = T(f"{n_models} modelos · {len(entries)} filas", f"{n_models} models · {len(entries)} rows")
             ui.put(4, x0, desc[: max(0, W - len(right) - 3)], ui.color(250) | _italic())
             ui.put(4, x0 + W - len(right), right, ui.color(ui.MUTED))
+            if mode == "harness":
+                self._lb_harnesses(entries, rows, x0, W, h, hue)
+                ui.footer(T("←→ modo · o abrir HTML · s ajustes · q volver", "←→ mode · o open HTML · s settings · q back"))
+                ui.scr.refresh()
+                k = ui.key(500 if flash else 2000)
+                if k in ("q", "Q", KEY_ESC):
+                    return
+                if k in (curses.KEY_RIGHT, "\t", "l"):
+                    mode_i, sel, top, col0 = mode_i + 1, 0, 0, 0
+                elif k in (curses.KEY_LEFT, curses.KEY_BTAB, "h"):
+                    mode_i, sel, top, col0 = mode_i - 1, 0, 0, 0
+                elif isinstance(k, str) and k.isdigit() and 1 <= int(k) <= len(tabs):
+                    mode_i, sel, top, col0 = int(k) - 1, 0, 0, 0
+                elif k in ("o", "O"):
+                    try:
+                        lb.open_html(lb.rebuild(s)["html"])
+                        opened = (time.time(), True)
+                    except Exception as ex:  # noqa: BLE001
+                        opened = (time.time(), False)
+                        ui.message(str(ex), C_BAD, "Error")
+                elif k in ("s", "S"):
+                    self.leaderboard_settings()
+                    stamp = None
+                continue
             # columns: rank · model · score + meter · tok/s · one per benchmark (the ones that don't fit scroll with < >)
             keys = [k for k in lb.mode_keys(mode) if any(k in e["benchmarks"] for e, _ in rows)]
             catl = cat.catalog()
@@ -2168,6 +2294,71 @@ class App:
             elif k in ("s", "S"):
                 self.leaderboard_settings()
                 stamp = None
+
+    def _lb_harnesses(self, entries: list[dict], hk: list[dict], x0: int, W: int, h: int, hue: int) -> None:
+        """The Harnesses tab: a row per harness (version, models, mean resolved with a meter, best model, how the model acts)
+        and the models × harnesses table, each model's best harness starred."""
+        ui, lb = self.ui, leaderboard
+        catl = cat.catalog()
+        lang = i18n.get_lang()
+        hd = ui.color(ui.MUTED, None, True)
+        nw, mw = 16, max(8, min(18, W // 7))
+        xv, xm, xr = x0 + 2 + nw, x0 + 10 + nw, x0 + 18 + nw
+        xb = xr + 8 + mw
+        y = 6
+        ui.put(y, x0 + 2, "HARNESS", hd)
+        ui.put(y, xv, T("VERS.", "VER."), hd)
+        ui.put(y, xm, T("MODELOS", "MODELS"), hd)
+        ui.put(y, xr, T("RESUELTAS (MEDIA)", "MEAN RESOLVED"), hd)
+        ui.put(y, xb, T("MEJOR MODELO", "BEST MODEL"), hd)
+        ui.put(y + 1, x0, "─" * W, ui.color(ui.RULE))
+        y += 2
+        for hh in sorted(hk, key=lambda r: -(r["mean"] or 0)):
+            if y + 1 >= h - 3:
+                break
+            ui.put(y, x0 + 2, hh["name"][:nw - 1], ui.color(hue, None, True))
+            ui.put(y, xv, (hh["version"] or "–")[:7], ui.color(250))
+            ui.put(y, xm, str(hh["models"]).rjust(4), ui.color(250))
+            v = hh["mean"]
+            ui.put(y, xr, (f"{v * 100:.1f}" if v is not None else "–").rjust(5), ui.color(255, None, True))
+            self._lb_bar(y, xr + 7, mw, v, hue)
+            b = hh["best"]
+            if b and b["value"]:
+                txt = f"{b['name']} {b['quant']} · {b['value'] * 100:.1f}%" + ("" if b.get("full") else f" (n={b['n']})")
+                ui.put(y, xb, txt[: max(0, x0 + W - xb)], ui.color(250))
+            ui.put(y + 1, x0 + 4, (hh.get(f"note_{lang}") or hh["note_en"])[: W - 6], ui.color(ui.MUTED) | _italic())
+            y += 3
+        rows = lb.harness_rows(entries)
+        keys = [r["key"] for r in hk]
+        if not rows or y + 3 >= h - 3:
+            return
+        y += 1
+        cw = max(12, min(18, (W - 34) // max(1, len(keys) + 1)))
+        ui.put(y, x0 + 2, T("MODELO", "MODEL"), hd)
+        for j, k in enumerate(keys):
+            ui.put(y, x0 + 30 + j * cw, catl[k].get("harness_name", k)[: cw - 1].rjust(cw - 1), hd)
+        ui.put(y, x0 + 30 + len(keys) * cw, T("MEJOR", "BEST").rjust(cw - 1), hd)
+        ui.put(y + 1, x0, "─" * W, ui.color(ui.RULE))
+        y += 2
+        for e in rows:
+            if y >= h - 3:
+                break
+            bk = (lb.best_harness(e) or (None, 0))[0]
+            name = f"{e['name']} {e['meta'].get('quant', '')}".strip()
+            ui.put(y, x0 + 2, (name if len(name) <= 27 else "…" + name[-26:]), ui.color(255, None, True))
+            for j, k in enumerate(keys):
+                r = e["benchmarks"].get(k)
+                cx = x0 + 30 + j * cw
+                if not r or r.get("value") is None:
+                    ui.put(y, cx, "–".rjust(cw - 1), ui.color(240))
+                    continue
+                val = ("★ " if k == bk else "") + f"{r['value'] * 100:.1f}" + ("" if r.get("full") else "*")
+                ui.put(y, cx, val.rjust(cw - 1), self._lb_heat(r["value"], hue) | (curses.A_BOLD if k == bk else 0))
+            ui.put(y, x0 + 30 + len(keys) * cw, (catl[bk].get("harness_name", bk) if bk else "–").rjust(cw - 1),
+                   ui.color(hue if bk else ui.MUTED, None, True))
+            y += 1
+        ui.hintline(T("★ el mejor harness de cada modelo · * medido sobre una muestra de tareas · media = sobre los modelos medidos con ese harness",
+                      "★ each model's best harness · * measured on a sample of the tasks · mean = over the models measured with that harness"))
 
     def leaderboard_card(self, e: dict, entries: list[dict], width: int) -> list:
         """A row of the leaderboard in detail: every mode's score and rank, each benchmark, speed, run settings and the other
@@ -2558,7 +2749,7 @@ class App:
         return [fit(left[i] if i < len(left) else [], lw) + [(" ", 0), sep, (" ", 0)] + (right[i] if i < len(right) else [])
                 for i in range(rows)]
 
-    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141, "agent": 78}    # the logo gradient, one hue per mode
+    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141, "agent": 78, "harness": 43}    # the logo gradient, one hue per mode
 
     def card_head(self, key: str, width: int, rule: bool = True) -> list:
         """Styled header of a benchmark card: mode badge, name, a row of fact tiles, description, links."""
@@ -2756,7 +2947,7 @@ class App:
         ui = self.ui
         catl = cat.catalog()
         hs = {k: v.get("harness_name", k) for k, v in catl.items() if v.get("mode") == "agent"}
-        state = {"rows": [], "size": -1, "chosen": None}
+        state = {"rows": [], "size": -1, "chosen": None, "detailed": False}
 
         def refresh():
             try:
@@ -2783,8 +2974,11 @@ class App:
             if not cur:
                 return mdview.render(T("# Agente en vivo\n\nEsperando la primera llamada al modelo…",
                                        "# Agent live\n\nWaiting for the first model call…"), w)
-            title = hs.get(cur[0], cur[0]) + ("" if state["chosen"] else T(" · siguiendo la tarea más reciente", " · following the newest task"))
-            return mdview.render(tr.live_markdown(state["rows"], cur[0], cur[1], title, finished(cur) or not running()), w)
+            done = finished(cur) or not running()
+            if state["detailed"]:                   # e: the whole session, to scroll through
+                title = hs.get(cur[0], cur[0]) + ("" if state["chosen"] else T(" · siguiendo la tarea más reciente", " · following the newest task"))
+                return mdview.render(tr.live_markdown(state["rows"], cur[0], cur[1], title, done), w)
+            return tr.live_lines(state["rows"], cur[0], cur[1], hs.get(cur[0], cur[0]), done, w, ui.size()[0])
 
         def live():
             refresh()
@@ -2796,8 +2990,13 @@ class App:
                 cur = current()
                 return T("Agente en vivo", "Agent live") + (f" · {cur[1]} [{hs.get(cur[0], cur[0])}]" if cur else "")
 
-            k = ui.md_pager(title, "", head=build, live=live, follow=True, keys=("t", "T"),
-                            hint=T("t otra tarea · G seguir el último paso", "t other task · G follow the last step"))
+            k = ui.md_pager(title, "", head=build, live=live, follow=True, keys=("t", "T", "e", "E"),
+                            hint=(T("e vista compacta · t otra tarea · G seguir", "e compact view · t other task · G follow")
+                                  if state["detailed"] else
+                                  T("e transcripción completa · t otra tarea", "e full transcript · t other task")))
+            if k in ("e", "E"):
+                state["detailed"] = not state["detailed"]
+                continue
             if k not in ("t", "T"):
                 return
             tasks = tr.live_tasks(state["rows"])
@@ -3088,6 +3287,7 @@ def run_tui(settings=None):
 
     def main(scr):
         app = App(scr, s)
+        app.splash()
         app.main()
         note.append(getattr(app, "exit_note", ""))
 

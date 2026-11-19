@@ -123,7 +123,7 @@ can be explored in the TUI (**9 · Agent traces**), and runs can be exported as 
 |:-:|:-:|
 | <img src="assets/screenshots/agent-harness.png" alt="Picking the harness in a pop-up" width="420"><br>**2 · Run → Agent**: the harness in a pop-up, tasks, steps, tokens, time | <img src="assets/screenshots/agent-live.png" alt="Live view of an agent run" width="420"><br>**Live view**: every step of the agent as it happens |
 | <img src="assets/screenshots/agent-traces.png" alt="The steps of a task" width="420"><br>**9 · Agent traces**: every step of a task, with its tokens and exit code | <img src="assets/screenshots/agent-step.png" alt="One step: reasoning, tool call and output" width="420"><br>**One step**: reasoning, answer, command or tool call and its output (`n`/`p`) |
-| <img src="assets/screenshots/agent-watch.png" alt="Watching the harness live" width="420"><br>**Watch the harness live** (`w` during a run): the session as it happens, following the last step | <img src="assets/screenshots/agent-tasks.png" alt="The same task with three harnesses" width="420"><br>**The same task, three harnesses**: resolved or not, steps and how each one ended |
+| <img src="assets/screenshots/agent-watch.png" alt="Watching the harness live" width="420"><br>**Watch the harness live** (`w` during a run): one screen, no scrolling: the earlier steps one line each, the current one in full (`e`: whole transcript) | <img src="assets/screenshots/agent-tasks.png" alt="The same task with three harnesses" width="420"><br>**The same task, three harnesses**: resolved or not, steps and how each one ended |
 | <img src="assets/screenshots/agent-report.png" alt="Agent run report" width="420"><br>**Report**: resolved per harness, patch applied, steps, FAIL_TO_PASS | <img src="assets/screenshots/agent-export.png" alt="Export as a dataset" width="420"><br>**Export** (`x` in Results): JSONL or Parquet |
 
 ## The TUI
@@ -131,6 +131,8 @@ can be explored in the TUI (**9 · Agent traces**), and runs can be exported as 
 <p align="center">
   <img src="assets/screenshots/main.png" alt="slmbench home screen: the model to evaluate with its estimated memory, and the menu" width="720">
 </p>
+
+<p align="center"><img src="assets/screenshots/splash.png" alt="The animated loading screen: the slmbench wordmark, the benchmark bars and the start-up checks" width="520"><br><sub>The loading screen at start: it connects to the model server, checks the sandboxes and loads the leaderboard (any key skips it).</sub></p>
 
 The home screen always shows **the model you're evaluating**: its parameters, quantization, server, leaderboard row, **estimated memory** and connection. The bottom-right corner shows any evaluation in progress, even one started from another terminal; click it or press `Ctrl+R` to watch it.
 
@@ -145,13 +147,14 @@ The home screen always shows **the model you're evaluating**: its parameters, qu
 
 - **1 · Model to evaluate**: a local `.gguf` (slmbench starts llama-server for you) or a running server; API key; connection test.
 - **2 · Run benchmarks**: mode and benchmarks (`?` shows a benchmark's card), samples, max tokens and the **reasoning budget**.
-- **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one. In an agent run, **`w` watches the harness live**: the session of the task being solved (reasoning, answer, command or tool call, output), following the last step (`↑` stops, `G` follows again, `t` picks another task); `w` works on the run screen too.
+- **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one. In an agent run, **`w` watches the harness live**, laid out to fit one screen: the earlier steps one line each (what they ran and how it went) and the current step in full (the end of its reasoning, the answer, the command or tool call and its output), updated as it happens; `e` switches to the whole transcript, `t` picks another task. `w` works on the run screen too.
 - **4 · Results**: `Enter` report, **`e` explore the answers** (benchmark → problems, failures first → prompt, answers and why each one failed; code is re-checked in the sandbox), **`l` errors and log**, **`r` rescore**, **`u` resume**, `Space` + `c` compare.
 - **7 · Chat with the model**: try a local GGUF by hand through `llama-cli`; `/exit` comes back.
 - **8 · Model memory**: see [below](#will-it-fit-memory-estimates-with-hf-mem).
 - **9 · Agent traces**: the agent-mode runs → their tasks (resolved or not, steps, cut answers) → every step: reasoning, answer, bash command or tool call with its arguments, and its output; `n`/`p` move between steps. Also `e` on an agent run in Results.
 - **4 · Results → `x`**: export the marked runs, this one, every agent run or every run as a dataset (JSONL or Parquet).
 - `L` switches between **English** and **Spanish**.
+- At start, an **animated loading screen** while slmbench connects to the model server, checks the sandboxes and loads the leaderboard (any key skips it; *6 · Settings* or `SLMBENCH_NO_SPLASH=1` turn it off).
 - Works on macOS, Linux and **WSL** (Windows Terminal). It needs a UTF-8 locale for its borders and wordmark: if `LANG` is unset (common on WSL) it switches to `C.UTF-8` by itself, and with no UTF-8 locale at all it falls back to plain ASCII. The large wordmark shows from 80×37, a smaller one from 42×31; smaller terminals just skip it.
 
 </details>
@@ -203,6 +206,7 @@ Every run is added automatically to **[leaderboard.md](leaderboard.md)** (with a
 - A mode's **Score** is the mean of its benchmarks. Only rows with **every benchmark of the mode measured on the full set** are ranked first and get medals; the others are listed below, marked `⚠️ k/N` (k of N benchmarks measured) or `partial` / `n=` (run with `--max-samples`, indicative only).
 - A partial run **never replaces** a full result already in the leaderboard.
 - **tok/s** is measured per mode: long-context prompts are much slower, so that table shows its own speeds.
+- **Harnesses**: the agent mode also gets its own section (in leaderboard.md, a tab in the HTML page and in the TUI): a card per harness (version, how the model acts, mean resolved over the models measured with it, its best model) and the models × harnesses table with each model's best harness highlighted. The same model can resolve very different numbers of tasks depending on the agent that drives it.
 
 ## Cheat sheet
 
