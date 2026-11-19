@@ -381,7 +381,7 @@ def _answers(folder: Path, t: dict) -> list[dict]:
                     r = json.loads(line)
                 except ValueError:
                     continue
-                if r.get("id") == t["id"] and r.get("key") in keys:
+                if r.get("id") == t["id"] and r.get("key") in keys and r.get("kind", "answer") == "answer":
                     rows.append(r)
             break
     return sorted(rows, key=lambda r: r.get("n") or 0)
@@ -489,6 +489,72 @@ def _task_rows(folder: Path) -> dict:
                     continue
             return out
     return {}
+
+
+# ---- live: the session as the relay sees it (answers.jsonl), while the task runs ----------------------------------------
+def live_rows(run_dir: str | Path) -> list[dict]:
+    rows = []
+    try:
+        with open(Path(run_dir) / "answers.jsonl", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return rows
+
+
+def live_tasks(rows: list[dict]) -> list[tuple[str, str]]:
+    """(benchmark key, task id) seen so far, the most recently active last."""
+    order: dict = {}
+    for i, r in enumerate(rows):
+        order[(r.get("key"), r.get("id"))] = i
+    return [k for k, _ in sorted(order.items(), key=lambda kv: kv[1])]
+
+
+def live_markdown(rows: list[dict], key: str, iid: str, title: str, finished: bool, clip: int = 40) -> str:
+    """The session of one task so far: every answer (reasoning, text, tool calls / bash block) and what came back."""
+    mine = [r for r in rows if r.get("key") == key and r.get("id") == iid]
+    answers = [r for r in mine if r.get("kind", "answer") == "answer"]
+    md = [f"# {iid}", "", f"{title} · {len(answers)} " + T("llamadas al modelo", "model calls") + " · "
+          + (T("**terminada**", "**finished**") if finished else T("**en marcha** (se actualiza sola; G sigue el último paso)",
+                                                                   "**running** (updates by itself; G follows the last step)")), ""]
+    if not mine:
+        md += [T("(todavía sin llamadas al modelo)", "(no model calls yet)"), ""]
+    for r in mine:
+        if r.get("kind") == "obs":
+            for it in r.get("items") or []:
+                role = it.get("role")
+                label = (f"↩ {T('Resultado', 'Result')} · {it['name']}" if it.get("name") else
+                         ("↩ " + T("Salida de la herramienta", "Tool output")) if role == "tool" else
+                         ("↩ " + T("Respuesta del harness", "From the harness")))
+                md += [f"### {label}", "", _fence(_clip(it.get("content") or "", clip)) if (it.get("content") or "").strip()
+                       else T("(vacía)", "(empty)"), ""]
+            continue
+        head = [T("Paso", "Step") + f" {r.get('n')}"]
+        if r.get("finish"):
+            head.append(f"finish: {r['finish']}" + (" ✂" if r["finish"] == "length" else ""))
+        if r.get("ct") is not None:
+            head.append(f"{r['ct']} tokens")
+        md += ["---", "", f"## {head[0]}", "", " · ".join(head[1:]), ""]
+        if r.get("reasoning"):
+            md += ["### 🧠 " + T("Razonamiento", "Reasoning"), "", _fence(_clip(r["reasoning"], clip)), ""]
+        if (r.get("content") or "").strip():
+            md += ["### 💬 " + T("Respuesta", "Response"), "", _fence(_clip(r["content"], clip)), ""]
+        for tc in r.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            args = fn.get("arguments") or ""
+            try:
+                a = json.loads(args) if isinstance(args, str) else args
+            except ValueError:
+                a = args
+            if fn.get("name") == "bash" and isinstance(a, dict) and "command" in a:
+                md += ["### $ bash", "", _fence(a["command"], "bash"), ""]
+            else:
+                md += [f"### 🔧 {fn.get('name', '?')}", "", _fence(json.dumps(a, ensure_ascii=False, indent=2), "json"), ""]
+    return "\n".join(md)
 
 
 def has_trajectories(folder: str | Path) -> bool:

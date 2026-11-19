@@ -123,6 +123,7 @@ can be explored in the TUI (**9 · Agent traces**), and runs can be exported as 
 |:-:|:-:|
 | <img src="assets/screenshots/agent-harness.png" alt="Picking the harness in a pop-up" width="420"><br>**2 · Run → Agent**: the harness in a pop-up, tasks, steps, tokens, time | <img src="assets/screenshots/agent-live.png" alt="Live view of an agent run" width="420"><br>**Live view**: every step of the agent as it happens |
 | <img src="assets/screenshots/agent-traces.png" alt="The steps of a task" width="420"><br>**9 · Agent traces**: every step of a task, with its tokens and exit code | <img src="assets/screenshots/agent-step.png" alt="One step: reasoning, tool call and output" width="420"><br>**One step**: reasoning, answer, command or tool call and its output (`n`/`p`) |
+| <img src="assets/screenshots/agent-watch.png" alt="Watching the harness live" width="420"><br>**Watch the harness live** (`w` during a run): the session as it happens, following the last step | <img src="assets/screenshots/agent-tasks.png" alt="The same task with three harnesses" width="420"><br>**The same task, three harnesses**: resolved or not, steps and how each one ended |
 | <img src="assets/screenshots/agent-report.png" alt="Agent run report" width="420"><br>**Report**: resolved per harness, patch applied, steps, FAIL_TO_PASS | <img src="assets/screenshots/agent-export.png" alt="Export as a dataset" width="420"><br>**Export** (`x` in Results): JSONL or Parquet |
 
 ## The TUI
@@ -144,7 +145,7 @@ The home screen always shows **the model you're evaluating**: its parameters, qu
 
 - **1 · Model to evaluate**: a local `.gguf` (slmbench starts llama-server for you) or a running server; API key; connection test.
 - **2 · Run benchmarks**: mode and benchmarks (`?` shows a benchmark's card), samples, max tokens and the **reasoning budget**.
-- **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one.
+- **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one. In an agent run, **`w` watches the harness live**: the session of the task being solved (reasoning, answer, command or tool call, output), following the last step (`↑` stops, `G` follows again, `t` picks another task); `w` works on the run screen too.
 - **4 · Results**: `Enter` report, **`e` explore the answers** (benchmark → problems, failures first → prompt, answers and why each one failed; code is re-checked in the sandbox), **`l` errors and log**, **`r` rescore**, **`u` resume**, `Space` + `c` compare.
 - **7 · Chat with the model**: try a local GGUF by hand through `llama-cli`; `/exit` comes back.
 - **8 · Model memory**: see [below](#will-it-fit-memory-estimates-with-hf-mem).

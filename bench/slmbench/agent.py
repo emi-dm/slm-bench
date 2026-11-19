@@ -513,6 +513,7 @@ class Relay:
             body = json.loads(base64.b64decode(msg.get("body") or "") or b"{}")
         except ValueError:
             return self._reply(msg["id"], 400, b'{"error":"invalid JSON"}')
+        self._observations(task, body.get("messages") or [])
         body["model"] = self.model
         for k, v in self.extra.items():
             body.setdefault(k, v)
@@ -543,6 +544,30 @@ class Relay:
             return self._reply(msg["id"], 502, json.dumps({"error": text}).encode())
         self._reply(msg["id"], 200, data, ctype)
         self._account(task, data, stream, time.time() - t0)
+
+    def _observations(self, task: str, messages: list) -> None:
+        """What came back from the agent's previous step (command output, tool results, the harness's feedback) travels in
+        the next request: the messages after the last assistant one. Saved in answers.jsonl, so the TUI can show the
+        session while it happens (the harnesses write their own trajectory only at the end)."""
+        last = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"), default=None)
+        if last is None:
+            return
+        items = []
+        for m in messages[last + 1:]:
+            if not isinstance(m, dict):
+                continue
+            c = m.get("content")
+            if isinstance(c, list):
+                c = "\n".join(p.get("text", "") for p in c if isinstance(p, dict))
+            items.append({"role": m.get("role"), "content": str(c or "")[:20000], "tool_call_id": m.get("tool_call_id") or "",
+                          "name": m.get("name") or ""})
+        if not items:
+            return
+        key, _, iid = task.partition("~")
+        with self.slock:
+            n = self.steps.get(task, 0)
+            with open(self.stats.parent / "answers.jsonl", "a") as f:
+                f.write(json.dumps({"key": key, "id": iid, "n": n, "kind": "obs", "items": items}, ensure_ascii=False) + "\n")
 
     def _account(self, task: str, data: bytes, stream: bool, elapsed: float):
         msgd, usage, timings, finish = {}, {}, {}, None

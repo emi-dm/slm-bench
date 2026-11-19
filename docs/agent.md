@@ -116,7 +116,13 @@ In the TUI, **9 · Agent traces** lists the agent-mode runs → their tasks (one
 exit status, cut answers) → every step: the reasoning, the answer, the bash command or tool call with its arguments, and
 what came back (`n`/`p` move between steps). `e` on an agent run in *Results* opens the same view, and
 `slmbench traj <run> [--task ID] [--harness pi] [--step N]` prints it. While a run is going, the live view (`Ctrl+R`) shows
-each harness's progress and the agent's latest steps; `x` there asks the run to stop (it removes its sandboxes). `u` resumes an interrupted run (finished tasks are kept) and `r`
+each harness's progress and the agent's latest steps; `x` there asks the run to stop (it removes its sandboxes).
+
+**Watching the harness live.** `w` (on the run screen, or in the live view) opens the session of the task being solved,
+updated as it happens: every answer of the model with its reasoning and its command or tool call, and what came back.
+It follows the last step (`↑` stops following, `G` resumes; `t` picks another task when several run in parallel). The
+harnesses write their own trajectory only when a task ends, so this view is built from what the relay sees: each answer,
+and the outputs of the previous step, which travel in the next request (`answers.jsonl`, entries with `"kind": "obs"`). `u` resumes an interrupted run (finished tasks are kept) and `r`
 grades the saved patches again without calling the model.
 
 ## Exporting a dataset

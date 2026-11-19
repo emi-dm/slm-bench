@@ -470,11 +470,12 @@ class UI:
         finally:
             curses.curs_set(0)
 
-    def md_pager(self, title, md, head=None, live=None, keys=(), hint=""):
+    def md_pager(self, title, md, head=None, live=None, keys=(), hint="", follow=False):
         """Muestra Markdown formateado (tablas con bordes, títulos y porcentajes en color).
         head(width) -> lines of (text, curses attr) drawn above the Markdown (e.g. a benchmark card's header).
         live() -> (token, busy): content that is still loading; re-rendered when the token changes, polled while busy.
-        keys: extra keys that close the pager and are returned (e.g. n/p to move to the next item); hint: their help."""
+        keys: extra keys that close the pager and are returned (e.g. n/p to move to the next item); hint: their help.
+        follow: stay at the end while live content grows (like tail -f); scrolling up stops it, G resumes it."""
         styles = {"h1": curses.color_pair(C_ACC) | curses.A_BOLD, "h2": curses.color_pair(C_ACC) | curses.A_BOLD, "h3": curses.A_BOLD,
                   "bold": curses.A_BOLD, "dim": curses.color_pair(C_DIM), "code": curses.color_pair(C_WARN), "quote": curses.color_pair(C_DIM),
                   "border": curses.color_pair(C_DIM), "thead": curses.color_pair(C_ACC) | curses.A_BOLD, "good": curses.color_pair(C_OK) | curses.A_BOLD,
@@ -492,6 +493,8 @@ class UI:
                     token, cache_w, first = tok, None, True
             if cache_w != w:
                 lines, cache_w = (head(max(40, w - 4)) if head else []) + mdview.render(md, max(40, w - 4)), w
+                if follow:
+                    top = max(0, len(lines) - (h - 3))
             body = h - 3
             # first frame, or a jump of more than one line (PgDn, g/G, ←→): full repaint. curses' scroll optimisation can
             # otherwise leave rows of the previous page on screen
@@ -501,7 +504,7 @@ class UI:
             else:
                 self.scr.erase()
             drawn = (top, left)
-            self.header(title)
+            self.header(title() if callable(title) else title)
             for i in range(body):
                 idx = top + i
                 if idx >= len(lines):
@@ -529,19 +532,21 @@ class UI:
             if k in (curses.KEY_DOWN, "j"):
                 top = min(more, top + 1)
             elif k in (curses.KEY_UP, "k"):
-                top = max(0, top - 1)
+                top, follow = max(0, top - 1), False
             elif k in (curses.KEY_NPAGE, " "):
                 top = min(more, top + body - 1)
             elif k == curses.KEY_PPAGE:
-                top = max(0, top - body + 1)
+                top, follow = max(0, top - body + 1), False
             elif k == curses.KEY_RIGHT:
                 left += 10
             elif k == curses.KEY_LEFT:
                 left = max(0, left - 10)
             elif k in ("g", curses.KEY_HOME):
                 top = left = 0
+                follow = False
             elif k in ("G", curses.KEY_END):
                 top = more
+                follow = bool(live)
 
     def pager(self, title, text, footer="↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir"):
         lines = text.split("\n")
@@ -1713,13 +1718,21 @@ class App:
                     row0 = 6
             for i, l in enumerate(tail[: max(0, h - row0 - 2)]):
                 ui.put(row0 + i, 2, l[: w - 4], curses.color_pair(C_DIM))
-            ui.footer("Cualquier tecla: continuar" if st["done"] else "q/Esc: cancelar")
+            agent_run = None
+            if progress and not st["done"]:
+                agent_run = next((a for a in engine.active_runs() if a.get("agent") and a.get("started", 0) >= t0 - 5), None)
+            ui.footer(T("Cualquier tecla: continuar", "Any key: continue") if st["done"] else
+                      (T("w ver el agente en vivo · ", "w watch the agent live · ") if agent_run else "")
+                      + T("q/Esc: cancelar", "q/Esc: cancel"))
             ui.scr.refresh()
             k = ui.key(250)
             tick += 1
             if st["done"]:
                 if k is not None and k != curses.KEY_RESIZE:
                     return st
+                continue
+            if k in ("w", "W") and agent_run:
+                self.watch_agent(agent_run["out"])
                 continue
             if k in ("q", "Q", KEY_ESC) and not st["cancelled"]:
                 if ui.confirm(cancel_prompt):
@@ -1862,12 +1875,16 @@ class App:
                         txt = f"{tname[:22]:<22} {flag:<7}{r.get('ct') or 0:>5} tok {r.get('t') or 0:>6.1f}s  {r.get('out', '')}"
                         st = curses.color_pair(C_WARN) if flag != "ok" else 0
                     ui.put(y + 1 + i, 2, txt[: w - 4], st)
-            ui.footer(T("l log/respuestas · ←→ otra ejecución · x cancelar · q volver", "l log/answers · ←→ other run · x cancel · q back"))
+            ui.footer((T("w agente en vivo · ", "w agent live · ") if agentic else "")
+                      + T("l log/respuestas · ←→ otra ejecución · x cancelar · q volver", "l log/answers · ←→ other run · x cancel · q back"))
             ui.scr.refresh()
             k = ui.key(1000)
             if k in ("q", "Q", KEY_ESC):
                 return
             repaint = k is not None
+            if k in ("w", "W") and agentic:
+                self.watch_agent(a["out"])
+                continue
             if k in ("l", "L", "\t"):
                 show_log = not show_log
             elif k in (curses.KEY_RIGHT, "n"):
@@ -2731,6 +2748,67 @@ class App:
                 return
             sel = k
             self.screen_trajectories(runs[k]["dir"])
+
+    def watch_agent(self, run_dir: str):
+        """The harness at work, live: the session of the task being solved (reasoning, answer, command or tool call, and
+        what came back), from what slmbench's relay sees. Follows the newest task unless t picks another one."""
+        from . import trajectory as tr
+        ui = self.ui
+        catl = cat.catalog()
+        hs = {k: v.get("harness_name", k) for k, v in catl.items() if v.get("mode") == "agent"}
+        state = {"rows": [], "size": -1, "chosen": None}
+
+        def refresh():
+            try:
+                size = (Path(run_dir) / "answers.jsonl").stat().st_size
+            except OSError:
+                size = 0
+            if size != state["size"]:
+                state["size"], state["rows"] = size, tr.live_rows(run_dir)
+
+        def current():
+            ts = tr.live_tasks(state["rows"])
+            return state["chosen"] if state["chosen"] in ts else (ts[-1] if ts else None)
+
+        def finished(cur) -> bool:
+            done = tr._task_rows(Path(run_dir))
+            return (catl.get(cur[0], {}).get("harness"), cur[1]) in done
+
+        def running() -> bool:
+            return any(a.get("out") == run_dir for a in engine.active_runs())
+
+        def build(w):
+            refresh()
+            cur = current()
+            if not cur:
+                return mdview.render(T("# Agente en vivo\n\nEsperando la primera llamada al modelo…",
+                                       "# Agent live\n\nWaiting for the first model call…"), w)
+            title = hs.get(cur[0], cur[0]) + ("" if state["chosen"] else T(" · siguiendo la tarea más reciente", " · following the newest task"))
+            return mdview.render(tr.live_markdown(state["rows"], cur[0], cur[1], title, finished(cur) or not running()), w)
+
+        def live():
+            refresh()
+            go = running()
+            return (state["size"], go), go
+
+        while True:
+            def title():
+                cur = current()
+                return T("Agente en vivo", "Agent live") + (f" · {cur[1]} [{hs.get(cur[0], cur[0])}]" if cur else "")
+
+            k = ui.md_pager(title, "", head=build, live=live, follow=True, keys=("t", "T"),
+                            hint=T("t otra tarea · G seguir el último paso", "t other task · G follow the last step"))
+            if k not in ("t", "T"):
+                return
+            tasks = tr.live_tasks(state["rows"])
+            if not tasks:
+                continue
+            items = [(T("▸ Seguir siempre la más reciente", "▸ Always follow the newest"), "")]
+            items += [(f"{iid}  [{hs.get(key, key)}]", "") for key, iid in tasks]
+            cur = current()
+            i = ui.choose(T("Tarea", "Task"), items, sel=0 if state["chosen"] is None else 1 + tasks.index(cur))
+            if i is not None:
+                state["chosen"] = None if i == 0 else tasks[i - 1]
 
     def screen_trajectories(self, folder: str):
         """Agent runs: tasks (resolved or not, steps, cut answers) -> the task's steps -> one step: reasoning, response,
