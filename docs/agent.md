@@ -6,7 +6,7 @@ patch is then graded with the **official SWE-bench harness**.
 
 ```bash
 slmbench setup --mode agent                      # once: the sandbox template, SWE-bench Lite and the image list
-slmbench run --mode agent --max-samples 5        # 5 tasks with both harnesses
+slmbench run --mode agent --max-samples 5        # 5 tasks with every harness
 slmbench run --benchmarks swebench_lite --max-samples 20 --agent-workers 2
 slmbench traj <run>                              # every step of the agent (also: Results → e in the TUI)
 ```
