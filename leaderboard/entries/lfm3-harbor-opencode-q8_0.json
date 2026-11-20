@@ -1,0 +1,38 @@
+{
+ "id": "lfm3-harbor-opencode-q8_0",
+ "name": "lfm3-harbor-opencode",
+ "model_id": "lfm3-harbor-opencode",
+ "created": "2026-11-19",
+ "updated": "2026-11-19",
+ "meta": {
+  "params_b": 1.73,
+  "size_gb": 1.71,
+  "quant": "Q8_0",
+  "ctx_train": 262144,
+  "backend": "llama.cpp b12110-cd959bae9",
+  "slots": 4,
+  "hardware": "Apple M4 Pro · 64 GB"
+ },
+ "speed": {},
+ "benchmarks": {
+  "swebench_lite_opencode": {
+   "metric": "resolved",
+   "value": 0.0,
+   "stderr": null,
+   "n": 1,
+   "full": false,
+   "date": "2026-11-19",
+   "temperature": 1.0,
+   "reasoning_budget": 4096,
+   "max_tokens": 64000
+  }
+ },
+ "speed_modes": {
+  "agent": {
+   "gen_tps": 59.7,
+   "prompt_tps": 545,
+   "workers": 5,
+   "date": "2026-11-19"
+  }
+ }
+}

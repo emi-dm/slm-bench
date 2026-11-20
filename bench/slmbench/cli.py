@@ -101,6 +101,64 @@ def cmd_review(args):
             print(f"#{x['index']:<4} {x['status']:<7}{flags:<16} " + " ".join(str(first).split())[:90])
 
 
+def cmd_traj(args):
+    from . import trajectory as tr
+    folder = Path(args.folder).expanduser()
+    if not folder.exists():
+        folder = Path(_run_dir(args.folder, config.load()))
+    if not args.task and sys.stdout.isatty() and not args.print:
+        from .tui import run_trajectories
+        run_trajectories(str(folder))
+        return
+    tasks = tr.find(folder)
+    if not args.task:
+        for t in tasks:
+            print(tr.task_line(t))
+        return
+    h = (args.harness or "").lower().replace("-", "")
+    t = next((x for x in tasks if x["id"] == args.task and (not h or x["agent"].lower().replace("-", "").startswith(h))), None)
+    if not t:
+        sys.exit(T(f"{args.task} no está en {folder}: ", f"{args.task} is not in {folder}: ")
+                 + ", ".join(f"{x['id']} ({x['agent']})" for x in tasks))
+    traj = tr.load_in(folder, t["path"])
+    if args.step is not None:
+        if not 1 <= args.step <= len(traj["steps"]):
+            sys.exit(T(f"La tarea tiene {len(traj['steps'])} pasos.", f"The task has {len(traj['steps'])} steps."))
+        print(tr.step_markdown(traj["steps"][args.step - 1], last=args.step == len(traj["steps"])))
+    else:
+        print(tr.full_markdown(traj, t["report"], clip=0 if args.full else 60))
+
+
+def cmd_export(args):
+    from . import export
+    s = config.load()
+    if args.all or args.mode:
+        dirs = [r["dir"] for r in engine.list_runs(s.out_dir) if not r.get("incomplete")]
+        if args.mode:
+            dirs = [d for d in dirs if _run_mode(d) == args.mode]
+    else:
+        dirs = [str(_run_dir(r, s)) for r in args.runs]
+    if not dirs:
+        sys.exit(T("No hay ejecuciones que exportar (indica una o usa --all / --mode).", "No runs to export (name one or use --all / --mode)."))
+    try:
+        path, n = export.export(dirs, args.format, args.output, s.out_dir, on_line=lambda l: print(l, flush=True))
+    except RuntimeError as e:
+        sys.exit("✗ " + str(e))
+    print(T(f"✔ {n} filas de {len(dirs)} ejecuciones → {path}", f"✔ {n} rows from {len(dirs)} runs → {path}"))
+
+
+def _run_mode(run_dir: str) -> str:
+    """The mode of a run: from its benchmarks (agent runs keep their tasks in agent/)."""
+    if (Path(run_dir) / "agent").is_dir():
+        return "agent"
+    try:
+        specs = json.loads((Path(run_dir) / "run.json").read_text()).get("specs") or []
+    except (OSError, ValueError):
+        return ""
+    modes = {cat.catalog()[k]["mode"] for k in (cat.spec_to_key(sp) for sp in specs) if k}
+    return modes.pop() if len(modes) == 1 else "mixed"
+
+
 def cmd_rescore(args):
     s = config.load()
     d = _run_dir(args.run, s)
@@ -126,7 +184,8 @@ def cmd_run(args):
     _apply(s, args, [("base_url", "base_url"), ("model", "model"), ("api_key", "api_key"), ("temperature", "temperature"),
                      ("ld_max_samples", "max_samples"), ("ld_max_new_tokens", "max_tokens"), ("reasoning_budget", "reasoning_budget"),
                      ("workers", "workers"), ("timeout", "timeout"), ("label", "label"), ("out_dir", "out"),
-                     ("passk_n", "passk_n")])
+                     ("passk_n", "passk_n"), ("agent_step_limit", "agent_steps"), ("agent_max_tokens", "agent_max_tokens"),
+                     ("agent_timeout", "agent_timeout"), ("agent_workers", "agent_workers")])
     if args.no_leaderboard:
         s.leaderboard_auto = False
     if getattr(args, "label", None):
@@ -342,7 +401,19 @@ def cmd_tui(args):
     run_tui()
 
 
+def _exit_on_signal(signum, _frame):
+    """SIGTERM / SIGHUP (a closed terminal) end slmbench like Ctrl+C would: `finally` blocks and atexit handlers run, so
+    the sandboxes of a run are removed instead of being left behind."""
+    raise SystemExit(128 + signum)
+
+
 def main():
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _exit_on_signal)
+        except (ValueError, OSError):
+            pass
     i18n.set_lang(config.load().ui_lang)
     modes = list(cat.MODES) + ["all"]
     ap = argparse.ArgumentParser(prog="slmbench", description=T(
@@ -364,6 +435,26 @@ def main():
     rv.add_argument("--sample", type=int, help=T("número de problema: muestra el detalle", "problem number: show its details"))
     rv.add_argument("--all", action="store_true", help=T("listar también los que aciertan", "also list the ones that pass"))
     rv.set_defaults(fn=cmd_review)
+    tj = sub.add_parser("traj", help=T("ver las trayectorias de un agente (mini-SWE-agent, Pi): razonamiento, respuestas, comandos y salidas",
+                                        "browse an agent's trajectories (mini-SWE-agent, Pi): reasoning, answers, commands and outputs"))
+    tj.add_argument("folder", help=T("carpeta con *.traj.json / *.pi.jsonl (o el nombre de una ejecución)",
+                                     "folder with *.traj.json / *.pi.jsonl (or a run's name)"))
+    tj.add_argument("--task", help=T("id de la tarea (p. ej. django__django-11099): imprime su trayectoria",
+                                     "task id (e.g. django__django-11099): print its trajectory"))
+    tj.add_argument("--harness", help=T("mini-swe-agent, pi u opencode (la misma tarea con varios harnesses)",
+                                        "mini-swe-agent, pi or opencode (the same task with several harnesses)"))
+    tj.add_argument("--step", type=int, help=T("imprime solo ese paso (1, 2…)", "print only that step (1, 2…)"))
+    tj.add_argument("--full", action="store_true", help=T("sin recortar las salidas largas", "don't clip long outputs"))
+    tj.add_argument("--print", action="store_true", help=T("listar las tareas en texto en vez de abrir la TUI", "list the tasks as text instead of opening the TUI"))
+    tj.set_defaults(fn=cmd_traj)
+    ex = sub.add_parser("export", help=T("exportar ejecuciones como dataset (JSONL o Parquet): tarea, sesión, solución y si es correcta",
+                                         "export runs as a dataset (JSONL or Parquet): task, session, solution and whether it's correct"))
+    ex.add_argument("runs", nargs="*", help=T("carpetas o nombres de ejecuciones", "run folders or names"))
+    ex.add_argument("--all", action="store_true", help=T("todas las ejecuciones terminadas", "every finished run"))
+    ex.add_argument("--mode", choices=list(cat.MODES), help=T("todas las ejecuciones de un modo (p. ej. agent)", "every run of a mode (e.g. agent)"))
+    ex.add_argument("--format", choices=["jsonl", "parquet"], default="jsonl")
+    ex.add_argument("-o", "--output", help=T("fichero de salida (por defecto <resultados>/exports/…)", "output file (default <results>/exports/…)"))
+    ex.set_defaults(fn=cmd_export)
     lg = sub.add_parser("log", help=T("errores de una ejecución (peticiones fallidas, avisos, trazas) y el final del log",
                                       "a run's errors (failed requests, warnings, tracebacks) and the end of its log"))
     lg.add_argument("run", help=T("carpeta de la ejecución o su nombre", "run folder or its name"))
@@ -404,6 +495,13 @@ def main():
                                                  "(1 = solo pass@1)", "coding and tools: answers per problem for pass@1/pass@5, at "
                                                  "--temperature (1 = pass@1 only)"))
     r.add_argument("--workers", type=int, help=T("peticiones simultáneas (≤ slots del servidor)", "concurrent requests (≤ server slots)"))
+    r.add_argument("--agent-steps", type=int, help=T("modo agente: llamadas al modelo por tarea como mucho (100)",
+                                                     "agent mode: model calls per task at most (100)"))
+    r.add_argument("--agent-max-tokens", type=int, help=T("modo agente: máx. tokens por respuesta (16384)",
+                                                          "agent mode: max tokens per answer (16384)"))
+    r.add_argument("--agent-timeout", type=int, help=T("modo agente: segundos por tarea (1800)", "agent mode: seconds per task (1800)"))
+    r.add_argument("--agent-workers", type=int, help=T("modo agente: tareas a la vez, máx. 3 (1); cada una suma 4 GB de RAM",
+                                                       "agent mode: tasks at a time, max 3 (1); each adds 4 GB of RAM"))
     r.add_argument("--base-url")
     r.add_argument("--model")
     r.add_argument("--api-key")

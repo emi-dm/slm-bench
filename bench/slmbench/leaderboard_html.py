@@ -11,7 +11,7 @@ import datetime as dt
 from html import escape
 
 # hue of each mode, taken from the logo gradient
-MODE_HUE = {"general": "#ff8a3d", "code": "#3b82f6", "tools": "#ec4899", "long": "#8b5cf6"}
+MODE_HUE = {"general": "#ff8a3d", "code": "#3b82f6", "tools": "#ec4899", "long": "#8b5cf6", "agent": "#10b981"}
 GRADIENT = ["#ffc93c", "#ffa83a", "#ff8a3d", "#ff6a5c", "#ff4f8b", "#d946ef", "#a855f7", "#8b5cf6", "#6366f1", "#3b82f6"]
 BARS = [3, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, 17, 16, 19, 18, 21, 20, 22]
 
@@ -44,7 +44,7 @@ def _name(name: str) -> str:
 def _facts(m: dict) -> list[str]:
     from . import leaderboard as lb
     return [x for x in (lb.params_txt(m) if m.get("params_b") else "", m.get("quant", ""),
-                        f"{m['size_gb']} GB" if m.get("size_gb") else "") if x]
+                        f"{m['size_gb']} GB" if m.get("size_gb") else "", f"LoRA {m['lora']}" if m.get("lora") else "") if x]
 
 
 def _podium(rows, mode: str) -> str:
@@ -65,6 +65,91 @@ def _podium(rows, mode: str) -> str:
             f'<div class="podscore"><b>{_pct(sc["score"])}</b>' + (f'<span>{sp} tok/s</span>' if sp else "") +
             '</div><span class="meter"></span></article>')
     return f'<div class="podium">{"".join(cards)}</div>'
+
+
+def _harness_panel(hk: list[dict], rows: list[dict], c: dict) -> str:
+    """The Harnesses tab: a card per agent harness (how the model acts, mean resolved, best model) and the models × harnesses
+    table with each model's best harness highlighted."""
+    from . import leaderboard as lb
+    cards = []
+    for h in sorted(hk, key=lambda h: -(h["mean"] or 0)):
+        b = h["best"]
+        best = (f'<span class="hbest">best: <b>{_name(b["name"])}</b> {escape(b["quant"])} · {_pct(b["value"])}'
+                + ("" if b.get("full") else f' <i>n={b["n"]}</i>') + "</span>") if b and b["value"] else ""
+        cards.append(
+            f'<article class="pod harness" style="--v:{(h["mean"] or 0):.4f}"><div class="podtop"><span class="podplace">harness</span>'
+            + (f'<span class="hver">v{escape(h["version"])}</span>' if h["version"] else "") + "</div>"
+            f'<h3 class="podname">{escape(h["name"])}</h3><div class="facts"><span>{escape(h["note_en"])}</span></div>'
+            f'<div class="podscore"><b>{_pct(h["mean"])}</b><span>mean resolved · {h["models"]} model{"s" if h["models"] != 1 else ""}</span></div>'
+            f'<span class="meter"></span>{best}'
+            + (f'<span class="hbest">per task: <b>{lb._num(h["turns"])}</b> turns · <b>{lb._tok(h["tokens"])}</b> tokens</span>'
+               if h.get("turns") is not None else "") + '</article>')
+    keys = [h["key"] for h in hk]
+    heads = [("Model", "model")] + [(c[k].get("harness_name", k), "num") for k in keys] + [("Best harness", "num")]
+    th = "".join(f'<th class="{cls}" scope="col"><button type="button">{escape(x)}</button></th>' for x, cls in heads)
+    body = []
+    for e in rows:
+        bk = (lb.best_harness(e) or (None, 0))[0]
+        tds = [f'<td class="model" data-v="{escape(e["name"].lower())}"><span class="name">{_name(e["name"])}</span>'
+               f'<span class="facts">{"".join(f"<span>{escape(str(x))}</span>" for x in _facts(e["meta"]))}</span></td>']
+        for k in keys:
+            r = e["benchmarks"].get(k)
+            sub = " · ".join(x for x in ("" if not r or r.get("full") else f"n={r['n']}",
+                                         f"{lb._num(r['turns'])} turns · {lb._tok(r.get('tokens'))} tok" if r and r.get("turns") else "") if x)
+            td = _cell(r["value"], sub) if r else _cell(None)
+            tds.append(td.replace('<td class="num"', '<td class="num hwin"', 1) if k == bk else td)
+        name = c[bk].get("harness_name", bk) if bk else "–"
+        tds.append(f'<td data-v="{escape(name)}"><span class="hpick">{escape(name)}</span></td>')
+        body.append('<tr class="ranked">' + "".join(tds) + "</tr>")
+    return ('<div class="intro"><h2>Harnesses</h2><p>SWE-bench Lite with each agent harness: the same model can resolve very '
+            'different numbers of tasks depending on the agent that drives it. Resolved = the tests of the real fix pass and '
+            'none breaks (official SWE-bench harness). Mean resolved averages the models measured with that harness; compare '
+            'them on the same models and task set (n = a sample of the tasks).</p></div>'
+            f'<div class="podium">{"".join(cards)}</div>'
+            f'<div class="scroll card"><table><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>')
+
+
+def _gain(v) -> str:
+    if v is None:
+        return '<td class="num na" data-v="-999"><span aria-label="no base measured">–</span></td>'
+    cls = "pos" if v > 0.0005 else "neg" if v < -0.0005 else "zero"
+    return f'<td class="num" data-v="{v:.4f}"><span class="gain {cls}">{v * 100:+.1f}</span></td>'
+
+
+def _adapter_panel(rows: list[dict]) -> str:
+    """The Adapters tab: every model served with a LoRA adapter against its base model (gain in points, on the
+    benchmarks both have measured), ranked by the mean gain."""
+    from . import leaderboard as lb
+    shown = [(m, t) for m, t in lb.modes() if any(m in r["modes"] for r in rows)]
+    heads = [("#", "rank"), ("Adapter", "model"), ("Base model", "model"), ("Gain", "num")] + [(t, "num") for _m, t in shown]
+    th = "".join(f'<th class="{cls}" scope="col"><button type="button">{escape(x)}</button></th>' for x, cls in heads)
+    body = []
+    for i, r in enumerate(rows):
+        e, base = r["entry"], r["base"]
+        rank = f'<span class="rk">{i + 1}</span>'
+        model = (f'<td class="model" data-v="{escape(e["name"].lower())}"><span class="name">{_name(e["name"])}</span>'
+                 f'<span class="facts">{"".join(f"<span>{escape(str(x))}</span>" for x in _facts(e["meta"]))}</span></td>')
+        if base:
+            bcell = f'<td class="model" data-v="{escape(base["name"].lower())}"><span class="name">{_name(base["name"])}</span></td>'
+        else:
+            bn = r["base_name"]
+            bcell = (f'<td class="model" data-v="{escape(bn.lower())}"><span class="name">{_name(bn) if bn else "–"}</span>'
+                     + ('<span class="tag">not measured</span>' if bn else "") + "</td>")
+        tds = [f'<td class="rank" data-v="{i}">{rank}</td>', model, bcell, _gain(r["gain"])]
+        for m, _t in shown:
+            x = r["modes"].get(m)
+            if not x:
+                tds.append(_cell(None))
+                continue
+            sub = " ".join(z for z in ((f"{x['delta'] * 100:+.1f} vs base" if x["delta"] is not None else ""),
+                                       ("sample" if x["partial"] else "")) if z)
+            tds.append(_cell(x["score"], sub))
+        body.append('<tr class="ranked">' + "".join(tds) + "</tr>")
+    return ('<div class="intro"><h2>LoRA adapters</h2><p>Models served with a LoRA adapter, against the base model they were '
+            'trained on. Gain = the adapter\'s score minus the base model\'s, in points, on the benchmarks both have measured; '
+            'ranked by the mean gain over the modes. The base model is the GGUF the server was started with, or the adapter\'s '
+            'base_model on Hugging Face: measure it too (same quantization) to see the gain.</p></div>'
+            f'<div class="scroll card"><table><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>')
 
 
 def _tip(rows, mode: str):
@@ -168,6 +253,23 @@ def page(entries: list[dict]) -> str:
             + _podium(rows, mode) + _charts(rows, mode, title) +
             f'<div class="scroll card"><table><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div></section>')
 
+    if lb.has_harnesses(entries):                     # Harnesses: the agent mode seen from the agents' side
+        hue = MODE_HUE.get("agent", "#10b981")
+        hk = [h for h in lb.harness_table(entries) if h["models"]]
+        hrows = lb.harness_rows(entries)
+        tabs.append(f'<button type="button" role="tab" id="tab-harness" aria-controls="p-harness" data-mode="harness" '
+                    f'style="--hue:{hue}"><span class="dot"></span>Harnesses<span class="count">{len(hk)}</span></button>')
+        panels.append(f'<section class="panel" role="tabpanel" id="p-harness" aria-labelledby="tab-harness" style="--hue:{hue}">'
+                      + _harness_panel(hk, hrows, c) + "</section>")
+
+    if lb.has_adapters(entries):                      # LoRA adapters against their base model
+        arows = lb.adapter_rows(entries)
+        hue = "#f59e0b"
+        tabs.append(f'<button type="button" role="tab" id="tab-adapters" aria-controls="p-adapters" data-mode="adapters" '
+                    f'style="--hue:{hue}"><span class="dot"></span>Adapters<span class="count">{len(arows)}</span></button>')
+        panels.append(f'<section class="panel" role="tabpanel" id="p-adapters" aria-labelledby="tab-adapters" style="--hue:{hue}">'
+                      + _adapter_panel(arows) + "</section>")
+
     details = []
     for e in sorted(entries, key=lambda x: x["name"].lower()):
         m, b = e["meta"], e["benchmarks"].values()
@@ -265,7 +367,16 @@ header{padding:52px 0 34px}
 .pod{position:relative;overflow:hidden;background:var(--paper);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:18px 20px 20px}
 .pod::before{content:"";position:absolute;inset:0 0 auto 0;height:90px;opacity:.5;pointer-events:none;
   background:radial-gradient(80% 100% at 0% 0%,color-mix(in srgb,var(--m) 45%,transparent),transparent 70%)}
-.pod.gold{--m:#ffc93c}.pod.silver{--m:#b8bfd6}.pod.bronze{--m:#e0824a}
+.pod.gold{--m:#ffc93c}.pod.silver{--m:#b8bfd6}.pod.bronze{--m:#e0824a}.pod.harness{--m:var(--hue)}
+.hver{margin-left:auto;font:600 12px var(--body);color:var(--mut);background:var(--soft);border-radius:20px;padding:2px 9px}
+.hbest{display:block;margin-top:12px;font-size:13px;color:var(--mut)}.hbest b{color:var(--ink);font-weight:700}.hbest i{font-style:normal;opacity:.75}
+td.hwin .chip{box-shadow:0 0 0 2px var(--hue);font-weight:800}
+.gain{font:700 14px var(--display);border-radius:20px;padding:4px 10px}.gain.pos{color:#0f7b4d;background:#d7f5e6}
+.gain.neg{color:#b42318;background:#fde3e1}.gain.zero{color:var(--mut);background:var(--soft)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .gain.pos{color:#5ee0a4;background:rgba(16,185,129,.16)}
+:root:not([data-theme="light"]) .gain.neg{color:#ff8a80;background:rgba(244,63,94,.16)}}
+:root[data-theme="dark"] .gain.pos{color:#5ee0a4;background:rgba(16,185,129,.16)}:root[data-theme="dark"] .gain.neg{color:#ff8a80;background:rgba(244,63,94,.16)}
+.hpick{font:600 13px var(--body);background:color-mix(in srgb,var(--hue) 16%,transparent);border-radius:20px;padding:3px 10px}
 .podtop{position:relative;display:flex;align-items:center;gap:10px}
 .podplace{font:600 12px var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
 .podname{position:relative;font:600 19px/1.25 var(--display);letter-spacing:-.015em;margin:14px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -371,7 +482,7 @@ code{font:13px ui-monospace,Menlo,monospace;background:var(--soft);border-radius
 <ul class="stats">%STATS%</ul></header>
 <div class="rule" aria-hidden="true"></div>
 <main>%MAIN%</main>
-<footer><p>A mode's score is the mean of its benchmarks' headline metrics. Rows are comparable only when every benchmark of the mode was measured on the full set; those come first and get medals.
+<footer><p>A mode's score is the mean of its benchmarks' headline metrics. In the Agent mode it is the model's best harness: mini-SWE-agent, Pi and OpenCode are ways of running the same tasks, not parts of the mode. Rows are comparable only when every benchmark of the mode was measured on the full set; those come first and get medals.
 Rows marked “k of N measured” or “sample run” are listed below them and are indicative only.</p>
 <p>Compare models measured on the same machine and settings (see “Run settings”). Click a column header to sort. Generated by <code>slmbench</code>.</p></footer>
 </div>

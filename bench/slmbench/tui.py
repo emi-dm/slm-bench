@@ -6,11 +6,13 @@ de slmbench en marcha (en este u otro proceso).
 """
 from __future__ import annotations
 
+import contextlib
 import curses
 import json
 import locale
 import os
 import random
+import sys
 import threading
 import time
 from dataclasses import dataclass, field as dc_field
@@ -38,6 +40,7 @@ class Field:
     choices: list = dc_field(default_factory=list)   # [(valor, texto)]
     hint: str = ""
     secret: bool = False
+    placeholder: str = ""       # shown, muted, instead of «(empty)» when there's no value
 
 
 SELECTABLE = ("text", "int", "float", "bool", "choice", "action")
@@ -341,6 +344,43 @@ class UI:
                                                     if i == 0 else fill))
         self.put(y + hh - 2, x + ww - len(buttons) - 3, buttons, self.color(self.MUTED, 235))
 
+    def choose(self, title, items, sel=0, footer=""):
+        """A pop-up list over the current screen: items [(label, hint)]; ↑↓ move, Enter choose, q/Esc cancel.
+        Returns the index chosen or None. The hint of the highlighted item is shown under the list."""
+        footer = footer or T("↑↓ mover · Enter elegir · Esc cancelar", "↑↓ move · Enter choose · Esc cancel")
+        while True:
+            h, w = self.size()
+            ww = min(w - 4, max(48, max((len(_(l)) for l, _h in items), default=0) + 10, len(footer) + 6, len(_(title)) + 10))
+            hint = self._wrap(_(items[sel][1]), ww - 6)[:4] if items[sel][1] else []
+            hh = len(items) + len(hint) + 6
+            y, x = max(1, (h - hh) // 2), max(1, (w - ww) // 2)
+            fill = self.color(252, 235)
+            for i in range(hh):
+                self.put(y + i, x, " " * ww, fill)
+                if i:
+                    self.put(y + i, x + ww, " ", self.color(None, 233))
+            self.put(y + hh, x + 1, " " * ww, self.color(None, 233))
+            self.box(y, x, hh, ww, _(title), self.color(209, 235) | curses.A_BOLD)
+            for i, (label, _h) in enumerate(items):
+                cur = i == sel
+                self.put(y + 2 + i, x + 2, (" ▸ " if cur else "   ") + _(label).ljust(ww - 7)[: ww - 7],
+                         self.color(255, self.SEL_BG, True) if cur else fill)
+            for j, l in enumerate(hint):
+                self.put(y + 3 + len(items) + j, x + 4, l, self.color(self.MUTED, 235))
+            self.put(y + hh - 2, x + ww - len(footer) - 3, footer, self.color(self.MUTED, 235))
+            self.scr.refresh()
+            k = self.key()
+            if k in (curses.KEY_DOWN, "j"):
+                sel = (sel + 1) % len(items)
+            elif k in (curses.KEY_UP, "k"):
+                sel = (sel - 1) % len(items)
+            elif k in ("\n", "\r", curses.KEY_ENTER):
+                return sel
+            elif k in ("q", "Q", KEY_ESC):
+                return None
+            elif k == curses.KEY_RESIZE:
+                self.scr.erase()
+
     @staticmethod
     def _wrap(text, width=70):
         import textwrap
@@ -433,10 +473,14 @@ class UI:
         finally:
             curses.curs_set(0)
 
-    def md_pager(self, title, md, head=None, live=None):
+    def md_pager(self, title, md, head=None, live=None, keys=(), hint="", follow=False, side=None):
         """Muestra Markdown formateado (tablas con bordes, títulos y porcentajes en color).
         head(width) -> lines of (text, curses attr) drawn above the Markdown (e.g. a benchmark card's header).
-        live() -> (token, busy): content that is still loading; re-rendered when the token changes, polled while busy."""
+        side(width) -> (lines, side_width) or None: a panel on the left that stays put while the rest scrolls (a benchmark
+        card's facts next to its sample task); taller than the screen, it scrolls only until its end shows.
+        live() -> (token, busy): content that is still loading; re-rendered when the token changes, polled while busy.
+        keys: extra keys that close the pager and are returned (e.g. n/p to move to the next item); hint: their help.
+        follow: stay at the end while live content grows (like tail -f); scrolling up stops it, G resumes it."""
         styles = {"h1": curses.color_pair(C_ACC) | curses.A_BOLD, "h2": curses.color_pair(C_ACC) | curses.A_BOLD, "h3": curses.A_BOLD,
                   "bold": curses.A_BOLD, "dim": curses.color_pair(C_DIM), "code": curses.color_pair(C_WARN), "quote": curses.color_pair(C_DIM),
                   "border": curses.color_pair(C_DIM), "thead": curses.color_pair(C_ACC) | curses.A_BOLD, "good": curses.color_pair(C_OK) | curses.A_BOLD,
@@ -446,6 +490,7 @@ class UI:
         top = left = 0
         cache_w, lines, first, drawn = None, [], True, None
         token, busy = (live() if live else (None, False))
+        pane, sw = None, 0
         while True:
             h, w = self.size()
             if live:
@@ -453,7 +498,12 @@ class UI:
                 if tok != token:
                     token, cache_w, first = tok, None, True
             if cache_w != w:
-                lines, cache_w = (head(max(40, w - 4)) if head else []) + mdview.render(md, max(40, w - 4)), w
+                pane = side(w - 2) if side else None
+                sw = pane[1] + 3 if pane else 0           # the panel, then " │ "
+                cw_ = max(40, w - 4 - sw)
+                lines, cache_w = (head(cw_) if head else []) + mdview.render(md, cw_), w
+                if follow:
+                    top = max(0, len(lines) - (h - 3))
             body = h - 3
             # first frame, or a jump of more than one line (PgDn, g/G, ←→): full repaint. curses' scroll optimisation can
             # otherwise leave rows of the previous page on screen
@@ -463,12 +513,24 @@ class UI:
             else:
                 self.scr.erase()
             drawn = (top, left)
-            self.header(title)
+            self.header(title() if callable(title) else title)
+            if pane:
+                ptop = min(top, max(0, len(pane[0]) - body))
+                for i in range(body):
+                    x = 1
+                    for text, style in (pane[0][ptop + i] if ptop + i < len(pane[0]) else []):
+                        for ch in text:
+                            cw = mdview.dwidth(ch)
+                            if x + cw > 1 + pane[1]:
+                                break
+                            self.put(2 + i, x, ch, style if isinstance(style, int) else styles.get(style, 0))
+                            x += cw
+                    self.put(2 + i, 2 + pane[1], "│", curses.color_pair(C_DIM))
             for i in range(body):
                 idx = top + i
                 if idx >= len(lines):
                     break
-                x, col = 1, 0
+                x, col = 1 + sw, 0
                 for text, style in lines[idx]:
                     for ch in text:
                         cw = mdview.dwidth(ch)
@@ -476,30 +538,36 @@ class UI:
                             self.put(2 + i, x, ch, style if isinstance(style, int) else styles.get(style, 0))
                             x += cw
                         col += cw
-            more = max(0, len(lines) - body)
-            self.footer(f"↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir   [{min(top + 1, len(lines))}/{len(lines)}]")
+            more = max(0, len(lines) - body, len(pane[0]) - body if pane else 0)
+            self.footer((hint + " · " if hint else "") + T("↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir",
+                                                             "↑↓ PgUp PgDn scroll · ←→ horizontal · g/G top/end · q back")
+                        + f"   [{min(top + 1, len(lines))}/{len(lines)}]")
             self.scr.refresh()
             k = self.key(120 if busy else -1)
             if k is None:
                 continue
+            if k in keys:
+                return k
             if k in ("q", "Q", KEY_ESC):
                 return
             if k in (curses.KEY_DOWN, "j"):
                 top = min(more, top + 1)
             elif k in (curses.KEY_UP, "k"):
-                top = max(0, top - 1)
+                top, follow = max(0, top - 1), False
             elif k in (curses.KEY_NPAGE, " "):
                 top = min(more, top + body - 1)
             elif k == curses.KEY_PPAGE:
-                top = max(0, top - body + 1)
+                top, follow = max(0, top - body + 1), False
             elif k == curses.KEY_RIGHT:
                 left += 10
             elif k == curses.KEY_LEFT:
                 left = max(0, left - 10)
             elif k in ("g", curses.KEY_HOME):
                 top = left = 0
+                follow = False
             elif k in ("G", curses.KEY_END):
                 top = more
+                follow = bool(live)
 
     def pager(self, title, text, footer="↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir"):
         lines = text.split("\n")
@@ -642,7 +710,7 @@ class UI:
                     self.put(y, 5 + lw + len(disp), " ›", self.color(self.MUTED, bg))
                     continue
                 if v in (None, ""):
-                    self.put(y, 3 + lw, _("(vacío)"), self.color(self.MUTED, bg) | _italic())
+                    self.put(y, 3 + lw, _(f.placeholder or "(vacío)"), self.color(self.MUTED, bg) | _italic())
                 else:
                     self.put(y, 3 + lw, "•" * min(12, len(str(v))) if f.secret else str(v), self.color(255 if cur else 252, bg, cur))
             if sel < len(fields) and fields[sel].hint:
@@ -744,6 +812,8 @@ class App:
         self._probing = False
         self._probed_at = 0.0
         self.status_gen = 0                       # +1 each time the server status is updated (screens redraw on change)
+        self._prewarmed = threading.Event()
+        self.jobs: list[dict] = []                # runs left going in the background (live_task → back to the menu)
         threading.Thread(target=self._prewarm, daemon=True).start()
 
     # ---- estado del modelo a evaluar ----
@@ -785,7 +855,7 @@ class App:
                 meta = self._meta_cache[key]
             else:
                 try:
-                    meta = servers.model_meta(s.base_url, mid)
+                    meta = servers.model_meta(s.base_url, mid, api_key=s.api_key)
                     self._meta_cache[key] = meta
                 except Exception:
                     meta = {}
@@ -812,6 +882,108 @@ class App:
                 cat.missing_tools(code[0])      # the sandbox status + the compilers inside it, cached for the session
         except Exception:
             pass
+        try:                                    # sandboxes left by a slmbench that died (kill -9, a crash): removed now
+            from . import sandbox
+            if sandbox.sbx_installed():
+                sandbox.prune()
+        except Exception:
+            pass
+        finally:
+            self._prewarmed.set()
+
+    def splash(self):
+        """The loading screen: the wordmark revealed with a light sweep in the logo's gradient, the benchmark bars dancing,
+        the tagline typed out, and the real start-up work with a spinner each (the model server, the sandboxes, the
+        leaderboard). As long as that work takes (1.6 s at least, 5 s at most); any key skips it."""
+        ui = self.ui
+        h, w = ui.size()
+        if (not getattr(self.s, "splash", True) or os.environ.get("SLMBENCH_NO_SPLASH") or ASCII_ONLY or h < 20 or w < 60
+                or curses.COLORS < 256):
+            return
+        import math
+        steps = [(T("Conectando con el servidor del modelo", "Connecting to the model server"), lambda: (self._probe(), self.connected)[1]),
+                 (T("Comprobando los sandboxes", "Checking the sandboxes"), lambda: self._prewarmed.wait(6)),
+                 (T("Cargando el leaderboard", "Loading the leaderboard"), lambda: bool(leaderboard.load_entries(self.s)) or True)]
+        done: list = [None] * len(steps)
+
+        def run(i, fn):
+            try:
+                done[i] = bool(fn())
+            except Exception:  # noqa: BLE001 - the splash never stops slmbench from opening
+                done[i] = False
+        for i, (_l, fn) in enumerate(steps):
+            threading.Thread(target=run, args=(i, fn), daemon=True).start()
+        G = art.BAR_GRADIENT
+        t0, MIN, MAX, held = time.time(), 1.6, 5.0, None
+        while True:
+            h, w = ui.size()
+            scale = 2 if w >= art.wordmark_width(scale=2) + 6 and h >= 30 else 1
+            rows, ww = art.wordmark(scale=scale), art.wordmark_width(scale=scale)
+            total = len(rows) + 9 + len(steps)
+            y0, x0 = max(1, (h - total) // 2), max(0, (w - ww) // 2)
+            t = time.time() - t0
+            ui.scr.erase()
+            # the wordmark, revealed left to right; the edge of the reveal and a later sweep glow in the gradient
+            reveal = ww * min(1.0, t / 0.75)
+            sweep = (t - 0.9) / 0.7 * (ww + 16) - 8 if t > 0.9 else -99
+            for i, segs in enumerate(rows):
+                xx = 0
+                for text, key in segs:
+                    fg, bold = art.PALETTE[key]
+                    for j, ch in enumerate(text):
+                        c = xx + j
+                        if ch == " " or c >= reveal:
+                            continue
+                        edge = reveal - c < 5 and t < 0.85
+                        glow = abs(c - sweep) < 3
+                        col = G[(c + int(t * 18)) % len(G)] if edge else (231 if glow else fg)
+                        ui.put(y0 + i, x0 + c, ch, ui.color(col, None, bold or glow))
+                    xx += len(text)
+            # the benchmark bars, growing then dancing
+            by = y0 + len(rows) + 1
+            grow = min(1.0, t / 0.6)
+            levels = "▁▂▃▄▅▆▇█"
+            for x in range(ww):
+                v = (0.5 + 0.3 * math.sin(x * 0.55 + t * 5.5) + 0.2 * math.sin(x * 1.7 - t * 3.7)) * grow
+                ui.put(by, x0 + x, levels[max(0, min(7, int(v * 8)))], ui.color(G[int(x * (len(G) - 1) / max(1, ww - 1))]))
+            # the tagline, typed out
+            tag = T(art.TAGLINE_ES, art.TAGLINE) if hasattr(art, "TAGLINE_ES") else art.TAGLINE
+            n = int(len(tag) * min(1.0, max(0.0, (t - 0.45) / 0.8)))
+            ui.put(by + 2, max(0, (w - len(tag)) // 2), tag[:n] + ("▌" if n < len(tag) and int(t * 6) % 2 == 0 else ""),
+                   ui.color(250) | _italic())
+            # the real start-up work
+            lw = max(len(l) for l, _f in steps) + 4
+            sx, sy = max(0, (w - lw) // 2), by + 4
+            for i, (label, _f) in enumerate(steps):
+                st = done[i]
+                if st is None:
+                    mark, col = SPIN[int(t * 12) % len(SPIN)], 209
+                elif st:
+                    mark, col = "✔", 78
+                else:
+                    mark, col = "○", 220
+                ui.put(sy + i, sx, mark, ui.color(col, None, True))
+                ui.put(sy + i, sx + 2, label, ui.color(255 if st is not None else 250))
+            bw = min(44, w - 8)
+            frac = min(1.0, 0.75 * sum(d is not None for d in done) / len(done) + 0.25 * min(1.0, t / MIN))
+            px = max(0, (w - bw) // 2)
+            for x in range(bw):
+                filled = x < int(bw * frac)
+                ui.put(sy + len(steps) + 1, px + x, "━" if filled else "─",
+                       ui.color(G[int(x * (len(G) - 1) / max(1, bw - 1))] if filled else 238))
+            hint = T("cualquier tecla para saltar", "any key to skip")
+            ui.put(h - 2, max(0, (w - len(hint)) // 2), hint, ui.color(240))
+            ui.scr.refresh()
+            finished = all(d is not None for d in done) and t >= MIN
+            if finished and held is None:
+                held = time.time()
+            if (held and time.time() - held > 0.35) or t >= MAX:
+                break
+            k = ui.key(33)
+            if k is not None and k != curses.KEY_RESIZE:
+                break
+        ui.scr.clear()                              # full repaint next: curses would otherwise leave splash cells behind
+        ui.scr.refresh()
 
     def current_model(self) -> str:
         return self.s.model or (self.models_seen[0] if self.models_seen else "")
@@ -882,8 +1054,8 @@ class App:
         self.refresh_status(wait=False)
         def menu_items():                          # rebuilt on every frame: «L» switches the language at once
             return [
-                ("1", T("Modelo a evaluar", "Model to evaluate"), T("Elige qué modelo se mide: un GGUF local (arranca llama-server) o un servidor ya en marcha (llama-server, Ollama, LM Studio, vLLM)",
-                                                                   "Choose the model to measure: a local GGUF (starts llama-server) or a running server (llama-server, Ollama, LM Studio, vLLM)")),
+                ("1", T("Modelo a evaluar", "Model to evaluate"), T("Elige qué modelo se mide: un GGUF local (arranca llama-server) o un servidor ya en marcha (llama-server, Ollama, LM Studio, vLLM, Unsloth Studio)",
+                                                                   "Choose the model to measure: a local GGUF (starts llama-server) or a running server (llama-server, Ollama, LM Studio, vLLM, Unsloth Studio)")),
                 ("2", T("Lanzar benchmarks", "Run benchmarks"), T("Modo general o programación; benchmarks públicos vía lighteval con progreso en vivo",
                                                                    "General or coding mode; public benchmarks via lighteval with live progress")),
                 ("3", T("Benchmarks", "Benchmarks"), T("Qué mide cada benchmark y una tarea real de muestra", "What each benchmark measures and a real sample task")),
@@ -894,10 +1066,12 @@ class App:
                                                                            "Try it by hand in a conversation with llama cli (local GGUF)")),
                 ("8", T("Memoria del modelo (hf-mem)", "Model memory (hf-mem)"), T("Cuánta memoria necesita el modelo a evaluar (pesos + KV cache + overhead) y si cabe en este equipo, con hf-mem",
                                                                  "How much memory the model under test needs (weights + KV cache + overhead) and whether it fits on this machine, with hf-mem")),
+                ("9", T("Trazas del agente", "Agent traces"), T("Cada paso del modelo como agente (modo agente: mini-SWE-agent, Pi, OpenCode): razonamiento, respuesta, comando o tool call y su salida",
+                                                                 "Every step of the model as an agent (agent mode: mini-SWE-agent, Pi, OpenCode): reasoning, answer, command or tool call and its output")),
                 ("q", T("Salir", "Quit"), ""),
             ]
 
-        actions = [self.screen_model, self.screen_run, self.screen_benchmarks, self.screen_results, self.screen_leaderboard, self.screen_config, self.screen_chat, self.screen_memory_current, None]
+        actions = [self.screen_model, self.screen_run, self.screen_benchmarks, self.screen_results, self.screen_leaderboard, self.screen_config, self.screen_chat, self.screen_memory_current, self.screen_traces, None]
         while True:
             items = menu_items()
             ui = self.ui
@@ -944,9 +1118,10 @@ class App:
                     ui.hintline(hint)
                 ui.put(yy, 4, f" {key} ", ui.color(ui.INK, 209, True) if cur else ui.color(209, 236, True))
                 ui.put(yy, 8, label, ui.color(255, bg, True) if cur else (curses.A_BOLD if i == 0 and not self.connected else 0))
-            ui.footer(T("↑↓ mover · Enter o 1-8 elegir · L idioma (EN/ES) · r reconectar · q salir", "↑↓ move · Enter or 1-8 select · L language (EN/ES) · r reconnect · q quit"))
+            ui.footer(T("↑↓ mover · Enter o 1-9 elegir · L idioma (EN/ES) · r reconectar · q salir", "↑↓ move · Enter or 1-9 select · L language (EN/ES) · r reconnect · q quit"))
             ui.scr.refresh()
-            k = ui.key(250 if self._probing or self.memory_pending() else 1500)
+            self.notify_jobs()                         # a run left in the background has ended: say so here
+            k = ui.key(250 if self._probing or self.memory_pending() else 1000 if self._jobs_alive() else 1500)
             choice = None
             if k in (curses.KEY_DOWN, "j"):
                 sel = (sel + 1) % len(items)
@@ -962,7 +1137,7 @@ class App:
             elif k in ("q", "Q", KEY_ESC):
                 if self.quit():
                     return
-            elif isinstance(k, str) and k in "12345678" and k:
+            elif isinstance(k, str) and k in "123456789" and k:
                 choice = int(k) - 1
             elif k in ("\n", "\r", curses.KEY_ENTER):
                 choice = sel
@@ -976,7 +1151,42 @@ class App:
                     fn()
                 self.refresh_status(wait=False)
 
+    def _jobs_alive(self) -> list[dict]:
+        return [j for j in self.jobs if not j["done"]]
+
+    def notify_jobs(self):
+        """Runs left in the background that have ended since the last look: one message each (report or error)."""
+        for j in self.jobs:
+            if j["done"] and not j.get("notified"):
+                j["notified"] = True
+                if j.get("err"):
+                    self.ui.message(f"{j['title']}\n\nError: {j['err']}", C_BAD, T("Ejecución terminada", "Run finished"))
+                elif j.get("res"):
+                    res = Path(str(j["res"]))
+                    if (res / "report.md").exists() and self.ui.confirm(
+                            T(f"✔ {j['title']}: terminada{' (cancelada)' if j.get('cancelled') else ''}.\n\n¿Ver el informe? (también en 4 · Resultados)",
+                              f"✔ {j['title']}: finished{' (cancelled)' if j.get('cancelled') else ''}.\n\nOpen the report? (also in 4 · Results)"), default=True):
+                        self.ui.md_pager(f"{T('Informe', 'Report')} · {res.name}", (res / "report.md").read_text())
+
     def quit(self):
+        alive = self._jobs_alive()
+        if alive:
+            if not self.ui.confirm(T(f"Hay {len(alive)} ejecución(es) en marcha en esta TUI. Si sales se cancelan (se guarda lo terminado "
+                                     "y se borran sus sandboxes). ¿Salir?",
+                                     f"{len(alive)} run(s) are still going in this TUI. Quitting cancels them (finished results are kept "
+                                     "and their sandboxes removed). Quit?")):
+                return False
+            ui = self.ui
+            for j in alive:
+                j["cancel"].set()
+            t0 = time.time()
+            while any(j["thread"].is_alive() for j in alive) and time.time() - t0 < 120:
+                ui.scr.erase()
+                ui.header(T("Saliendo", "Quitting"))
+                ui.put(3, 2, f"{SPIN[int(time.time() * 10) % len(SPIN)]} " + T("Cancelando las ejecuciones en marcha…", "Cancelling the running runs…"),
+                       curses.color_pair(C_WARN) | curses.A_BOLD)
+                ui.scr.refresh()
+                time.sleep(0.1)
         st = servers.managed_state()
         if st and self.ui.confirm(f"El llama-server lanzado desde aquí sigue en marcha (PID {st['pid']}). ¿Detenerlo al salir?", default=True):
             ui = self.ui
@@ -1002,8 +1212,10 @@ class App:
         ("Ollama", "http://127.0.0.1:11434/v1"),
         ("LM Studio", "http://127.0.0.1:1234/v1"),
         ("vLLM / SGLang", "http://127.0.0.1:8000/v1"),
+        ("Unsloth Studio", "http://127.0.0.1:8888/v1"),
         ("Otra URL…", ""),
     ]
+    STUDIO = "Unsloth Studio"
 
     def screen_model(self):
         ui, s = self.ui, self.s
@@ -1015,11 +1227,18 @@ class App:
                 Field("", "¿Qué modelo quieres medir?", "section"),
                 Field("", "slmbench habla con cualquier servidor con API OpenAI. Elige una de las dos formas:", "info", ""),
                 Field("local", "A · Modelo local: elegir un .gguf y arrancar llama-server", "action", "(recomendado)"),
-                Field("remote", "B · Conectar a un servidor que ya está en marcha", "action", "llama-server, Ollama, LM Studio, vLLM…"),
+                Field("remote", "B · Conectar a un servidor que ya está en marcha", "action", "llama-server, Ollama, LM Studio, vLLM, Unsloth Studio…"),
                 Field("", "Selección actual", "section"),
                 Field("", "Servidor: ", "info", s.base_url),
                 Field("api_key", "Clave de API (si el servidor la pide)", "text", s.api_key, secret=True,
-                      hint="Se guarda en ~/.config/slmbench/config.json con permisos 600."),
+                      hint=(T("Vacía: se usa UNSLOTH_API_KEY (Unsloth Studio). Una clave aquí tiene prioridad y se guarda en "
+                              "~/.config/slmbench/config.json con permisos 600.",
+                              "Empty: UNSLOTH_API_KEY is used (Unsloth Studio). A key here takes precedence and is saved in "
+                              "~/.config/slmbench/config.json with permissions 600.")
+                            if not s.api_key and os.environ.get("UNSLOTH_API_KEY") and servers.is_unsloth_studio(s.base_url) else
+                            "Se guarda en ~/.config/slmbench/config.json con permisos 600."),
+                      placeholder=("(UNSLOTH_API_KEY)" if not s.api_key and os.environ.get("UNSLOTH_API_KEY")
+                                   and servers.is_unsloth_studio(s.base_url) else "")),
                 Field("pick", "Modelo", "action", self.current_model() + ("" if s.model else "  (el primero del servidor)") if self.current_model() else "— sin conexión —"),
                 Field("label", "Etiqueta de la ejecución (opcional)", "text", s.label,
                       hint="Nombre de la carpeta de resultados y de los informes de este modelo (al cambiar de modelo deja de aplicarse). El leaderboard usa siempre el id del modelo; para comparar variantes, sírvelas con ids distintos (--alias)."),
@@ -1043,6 +1262,37 @@ class App:
                                        if self.current_model() else T("— sin conexión —", "— not connected —"))
             if st:
                 fields.insert(4, Field("", "", "info", f"llama-server lanzado desde aquí: PID {st['pid']} · puerto {st['port']} · {st['alias']}"))
+            if servers.is_unsloth_studio(s.base_url):     # Studio loads the model (and its LoRA) itself: ask it from here
+                from . import studio
+                now = studio.status(s.base_url, servers.effective_key(s.base_url, s.api_key))
+                at = next(i for i, f in enumerate(fields) if f.key == "status") + 1
+                fields[at:at] = [
+                    Field("", "Unsloth Studio", "section"),
+                    Field("", "", "info", (T("Cargado: ", "Loaded: ") + now["model"] + (f" ({now['variant']})" if now.get("variant") else "")
+                                           + (f" · ctx {now['context_length']}" if now.get("context_length") else "")
+                                           + (f"  +  LoRA {now['lora']}" if now.get("lora") else "")) if now.get("model")
+                          else T("Studio no tiene ningún modelo cargado.", "Studio has no model loaded.")),
+                    Field("studio_pick", T("Modelo base (GGUF de Studio)", "Base model (Studio GGUF)"), "action",
+                          s.studio_model or T("(elegir)", "(pick)"),
+                          hint=T("Los modelos que Studio tiene descargados.", "The models Studio has downloaded.")),
+                    Field("studio_variant", T("Cuantización", "Quantization"), "text", s.studio_variant,
+                          hint=T("p. ej. Q8_0. Vacío = la que Studio tenga descargada.", "e.g. Q8_0. Empty = the one Studio has downloaded."),
+                          placeholder=T("(la descargada)", "(the downloaded one)")),
+                    Field("studio_lora", T("Adaptador LoRA (opcional)", "LoRA adapter (optional)"), "text", s.studio_lora,
+                          hint=T("Un .gguf, un repo de HF (org/repo[:fichero.gguf]) o su URL; un repo PEFT usa su versión -GGUF. Se descarga "
+                                 "aquí y Studio lo carga con --lora.",
+                                 "A .gguf, a HF repo (org/repo[:file.gguf]) or its URL; a PEFT repo uses its -GGUF version. It's downloaded "
+                                 "here and Studio loads it with --lora.")),
+                    Field("studio_lora_scale", T("Escala del LoRA", "LoRA scale"), "float", s.studio_lora_scale),
+                    Field("studio_ctx", T("Contexto (tokens)", "Context (tokens)"), "int", s.studio_ctx,
+                          hint=T("p. ej. 32768 o 65536 para el modo agente. 0 = el que Studio elija según la memoria. Studio puede "
+                                 "dar menos si no cabe.",
+                                 "e.g. 32768, or 65536 for agent mode. 0 = the one Studio picks for the memory. Studio may give less "
+                                 "if it doesn't fit.")),
+                    Field("studio_load", "▶ " + T("Cargar en Unsloth Studio", "Load in Unsloth Studio"), "action", "",
+                          hint=T("Studio carga el modelo (con el adaptador) y queda como el modelo a evaluar.",
+                                 "Studio loads the model (with the adapter) and it becomes the model to evaluate.")),
+                ]
             old_label = s.label
             kind, key = ui.form("Modelo a evaluar", fields, state, footer="↑↓ mover · Enter elegir/editar · q volver", tick=tick)
             sync(fields, s)
@@ -1053,18 +1303,63 @@ class App:
                 return
             if key == "local":
                 self.screen_server()
+            elif key == "studio_pick":
+                from . import studio
+                ms, err = self.busy("Unsloth Studio", T("Leyendo los modelos de Studio…", "Reading Studio's models…"),
+                                    lambda: studio.models(s.base_url, servers.effective_key(s.base_url, s.api_key)))
+                if err or not ms:
+                    ui.message(str(err or T("Studio no tiene modelos descargados.", "Studio has no downloaded models.")), C_BAD, "Unsloth Studio")
+                    continue
+                i = ui.menu(T("Modelo base en Unsloth Studio", "Base model in Unsloth Studio"),
+                            [(f"{m['id']:<44} {m['quant']:<12}" + (T(" ● cargado", " ● loaded") if m["loaded"] else ""), "") for m in ms],
+                            sub=T("El adaptador LoRA se elige aparte, en «Adaptador LoRA»", "The LoRA adapter is set apart, in \"LoRA adapter\""))
+                if i is not None:
+                    s.studio_model, s.studio_variant = ms[i]["id"], ms[i]["quant"]
+                    config.save(s)
+            elif key == "studio_load":
+                from . import studio
+                label = s.studio_model + (f" + LoRA {s.studio_lora.strip()}" if s.studio_lora.strip() else "")
+                res, err = self.busy("Unsloth Studio", T(f"Studio está cargando {label}…", f"Studio is loading {label}…"),
+                                     lambda: studio.load(s.base_url, servers.effective_key(s.base_url, s.api_key), s.studio_model,
+                                                         s.studio_variant, s.studio_lora, s.studio_lora_scale, s.studio_ctx))
+                if err:
+                    if str(err) != T("cancelado", "cancelled"):
+                        ui.message(str(err), C_BAD, "Unsloth Studio")
+                    continue
+                s.model = res["model"]
+                config.save(s)
+                self.refresh_status(wait=True)
+                ui.message(T(f"Cargado en Unsloth Studio: {res['model']}", f"Loaded in Unsloth Studio: {res['model']}")
+                           + (f"\n+ LoRA {res['lora']}" if res["lora"] else "") + (f"\n{T('contexto', 'context')}: {res['context_length']}"
+                                                                                  if res.get("context_length") else "")
+                           + (T(f" (pediste {res['asked_ctx']}: Studio lo ajustó a la memoria)", f" (you asked for {res['asked_ctx']}: Studio "
+                                "fitted it to the memory)") if res.get("asked_ctx") and res.get("context_length")
+                              and res["context_length"] != res["asked_ctx"] else "")
+                           + "\n\n" + T("Es el modelo a evaluar; en el leaderboard irá a la fila del adaptador.",
+                                          "It's the model to evaluate; in the leaderboard it goes to the adapter's row."), C_OK, "Unsloth Studio")
             elif key == "remote":
                 i = ui.menu("¿Qué servidor está en marcha?", [(f"{n:<26} {u}", "") for n, u in self.PRESETS],
                             sub="Arráncalo antes por tu cuenta (p. ej. `ollama serve`, LM Studio › Developer › Start server)")
                 if i is None:
                     continue
                 url = self.PRESETS[i][1]
+                studio = self.PRESETS[i][0] == self.STUDIO
                 if not url:
                     url = ui.edit("URL base (termina en /v1)", s.base_url) or ""
                 if url:
                     s.base_url = url.strip()
                     s.model = ""
                     config.save(s)
+                    if studio and not s.api_key:          # Unsloth Studio always wants a key: UNSLOTH_API_KEY, or ask for it
+                        if os.environ.get("UNSLOTH_API_KEY"):
+                            ui.toast(T("Unsloth Studio: se usa la clave de UNSLOTH_API_KEY", "Unsloth Studio: using the key in UNSLOTH_API_KEY"), C_OK)
+                        else:
+                            key_in = ui.edit(T("Clave de API de Unsloth Studio", "Unsloth Studio API key"), "", secret=True,
+                                             hint=T("Unsloth Studio pide una clave (Ajustes › API). También puedes exportar UNSLOTH_API_KEY.",
+                                                    "Unsloth Studio needs a key (Settings › API). You can also export UNSLOTH_API_KEY."))
+                            if key_in:
+                                s.api_key = key_in.strip()
+                                config.save(s)
                     self.check_server()
                     while self.needs_key:                 # the server is there but wants a key: ask for it right here
                         key_in = ui.edit(T("Clave de API", "API key"), s.api_key, secret=True,
@@ -1117,6 +1412,7 @@ class App:
                       hint='p. ej. {"chat_template_kwargs":{"enable_thinking":false}} para desactivar razonamiento en modelos que lo permiten'),
                 Field("", "Interfaz", "section"),
                 Field("ui_lang", "Idioma de la interfaz", "choice", s.ui_lang, [("en", "English"), ("es", "Español")], hint="También con la tecla L en el menú principal."),
+                Field("splash", T("Pantalla de carga animada al abrir", "Animated loading screen at start"), "bool", s.splash),
                 Field("", "Salida", "section"),
                 Field("out_dir", "Carpeta de resultados", "text", s.out_dir),
                 Field("leaderboard_auto", T("Añadir cada ejecución al leaderboard", "Add every run to the leaderboard"), "bool", s.leaderboard_auto),
@@ -1162,7 +1458,16 @@ class App:
                 fields.append(Field("srv_hf", "Repositorio HF", "text", s.srv_hf, hint="usuario/repo[:quant], p. ej. LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"))
             fields.append(Field("memline", T("Memoria (hf-mem): ", "Memory (hf-mem): "), "info", "…"))   # filled in by mem_tick, for the context (-c) set below
             fields += [
-                Field("srv_alias", "Alias (nombre en la API)", "text", s.srv_alias, hint="Vacío = nombre del fichero. Es el «model» que verá el bench."),
+                Field("srv_lora", T("Adaptador LoRA (opcional)", "LoRA adapter (optional)"), "text", s.srv_lora,
+                      hint=T("Un .gguf, un repo de HF (org/repo[:fichero.gguf]) o su URL, p. ej. harness-hub/LFM3-1.7B-opencode-GGUF. "
+                             "Un repo PEFT usa su versión -GGUF. Se descarga al arrancar y se pasa con --lora.",
+                             "A .gguf, a HF repo (org/repo[:file.gguf]) or its URL, e.g. harness-hub/LFM3-1.7B-opencode-GGUF. "
+                             "A PEFT repo uses its -GGUF version. Downloaded at start and passed with --lora.")),
+                Field("srv_lora_scale", T("Escala del LoRA", "LoRA scale"), "float", s.srv_lora_scale,
+                      hint=T("1 = el adaptador tal cual (--lora); otro valor: --lora-scaled.", "1 = the adapter as is (--lora); any other value: --lora-scaled.")),
+                Field("srv_alias", "Alias (nombre en la API)", "text", s.srv_alias,
+                      hint=T("Vacío = nombre del fichero, o el del adaptador LoRA si hay uno (otra fila del leaderboard). Es el «model» que verá el bench.",
+                             "Empty = the file's name, or the LoRA adapter's if there is one (another leaderboard row). It's the «model» the bench sees.")),
                 Field("", T(f"Argumentos de {binary or 'llama-server'}", f"{binary or 'llama-server'} arguments"), "section"),
                 Field("srv_port", "Puerto (--port)", "int", s.srv_port),
                 Field("srv_ctx", "Contexto total (-c)", "int", s.srv_ctx, hint="Se reparte entre los slots (-np). Para las pruebas de 16k usa ≥ 20000 por slot."),
@@ -1578,6 +1883,15 @@ class App:
 
     def start_server(self):
         ui, s = self.ui, self.s
+        if (s.srv_lora or "").strip():                 # find and download the adapter first, with a spinner
+            from . import lora
+            info, err = self.busy(T("Adaptador LoRA", "LoRA adapter"), T(f"Buscando y descargando {s.srv_lora.strip()}…",
+                                                                         f"Finding and downloading {s.srv_lora.strip()}…"),
+                                  lambda: lora.resolve(s.srv_lora))
+            if err:
+                if str(err) != T("cancelado", "cancelled"):
+                    ui.message(str(err), C_BAD, T("Adaptador LoRA", "LoRA adapter"))
+                return
         st = servers.start(s)
         t0 = time.time()
         spin = "|/-\\"
@@ -1608,8 +1922,10 @@ class App:
         ui.message(f"Servidor listo en {s.base_url}\nmodelo: {s.model}\n(ya es el destino del bench)", C_OK, "Servidor")
 
     # ---- tarea en segundo plano con log en vivo ----
-    def live_task(self, title, worker, sub="", cancel_prompt="¿Cancelar? Se detendrá el proceso.", progress=False):
-        """Ejecuta worker(on_line, cancel) en un hilo y muestra las últimas líneas. Devuelve {'err','res','cancelled','lines'}."""
+    def live_task(self, title, worker, sub="", cancel_prompt="¿Cancelar? Se detendrá el proceso.", progress=False, background=False):
+        """Ejecuta worker(on_line, cancel) en un hilo y muestra las últimas líneas. Devuelve {'err','res','cancelled','lines'}.
+        background: m (or q/Esc → «back to the menu») leaves it running and returns at once with {'background': True}; the
+        main menu tells when it ends (self.jobs)."""
         ui = self.ui
         lines: list[str] = []
         lock = threading.Lock()
@@ -1663,13 +1979,37 @@ class App:
                     row0 = 6
             for i, l in enumerate(tail[: max(0, h - row0 - 2)]):
                 ui.put(row0 + i, 2, l[: w - 4], curses.color_pair(C_DIM))
-            ui.footer("Cualquier tecla: continuar" if st["done"] else "q/Esc: cancelar")
+            agent_run = None
+            if progress and not st["done"]:
+                agent_run = next((a for a in engine.active_runs() if a.get("agent") and a.get("started", 0) >= t0 - 5), None)
+            ui.footer(T("Cualquier tecla: continuar", "Any key: continue") if st["done"] else
+                      (T("w ver el agente en vivo · ", "w watch the agent live · ") if agent_run else "")
+                      + (T("m volver al menú (sigue en marcha) · q/Esc: opciones", "m back to the menu (keeps running) · q/Esc: options")
+                         if background else T("q/Esc: cancelar", "q/Esc: cancel")))
             ui.scr.refresh()
             k = ui.key(250)
             tick += 1
             if st["done"]:
                 if k is not None and k != curses.KEY_RESIZE:
                     return st
+                continue
+            if k in ("w", "W") and agent_run:
+                self.watch_agent(agent_run["out"])
+                continue
+            if background and not st["cancelled"] and k in ("m", "M", "q", "Q", KEY_ESC):
+                choice = 0 if k in ("m", "M") else ui.choose(title, [
+                    (T("Volver al menú: la ejecución sigue en segundo plano", "Back to the menu: the run keeps going in the background"),
+                     T("Síguela con «● en marcha» del pie o Ctrl+R; el menú avisa cuando termine.",
+                       "Follow it with \"● running\" at the bottom or Ctrl+R; the menu tells you when it ends.")),
+                    (T("Cancelar la ejecución", "Cancel the run"), _(cancel_prompt)),
+                    (T("Seguir viéndola aquí", "Keep watching it here"), "")])
+                if choice == 0:
+                    st["thread"], st["cancel"], st["title"], st["background"] = th, cancel, title, True
+                    self.jobs.append(st)
+                    return st
+                if choice == 1:
+                    st["cancelled"] = True
+                    cancel.set()
                 continue
             if k in ("q", "Q", KEY_ESC) and not st["cancelled"]:
                 if ui.confirm(cancel_prompt):
@@ -1714,11 +2054,19 @@ class App:
             el = time.time() - a.get("started", time.time())
             tot, done = a.get("total") or 0, len(rows)
             eta = el / done * (tot - done) if done and tot and done < tot else 0
-            ok = [r for r in rows if "error" not in r]
+            agentic = bool(a.get("agent"))
+            calls = rows
+            if agentic:                         # rows = finished tasks; the model calls are in requests.jsonl
+                try:
+                    with open(Path(a["out"]) / "requests.jsonl") as fh:
+                        calls = [json.loads(l) for l in fh if l.strip()]
+                except (OSError, ValueError):
+                    calls = []
+            ok = [r for r in calls if "error" not in r]
             tps = [r["tps"] for r in ok if r.get("tps")]
             empty = sum(1 for r in ok if r.get("empty"))
             trunc = sum(1 for r in ok if r.get("finish") == "length")
-            errs = len(rows) - len(ok)
+            errs = len(calls) - len(ok)
             y = 2
             ui.put(y, 2, f"{T('Modelo', 'Model')}: ", curses.A_BOLD)
             ui.put(y, 12, f"{a.get('model', '?')}  ·  {a.get('base_url', '')}", curses.color_pair(C_ACC) | curses.A_BOLD)
@@ -1732,6 +2080,11 @@ class App:
                    + (f"  ·  ETA {int(eta // 60)}m{int(eta % 60):02d}s" if eta else "")
                    + (f"  ·  {sum(tps) / len(tps):.1f} tok/s" if tps else ""))
             warn = f"{T('vacías', 'empty')}: {empty}  ·  {T('truncadas', 'truncated')}: {trunc}  ·  {T('errores API', 'API errors')}: {errs}"
+            if agentic:
+                toks = sum(int(r.get("pt") or 0) + int(r.get("ct") or 0) for r in ok)
+                from .agent import human
+                warn = (f"{T('llamadas al modelo', 'model calls')}: {len(calls)}  ·  tokens: {human(toks)}  ·  {T('cortadas', 'cut')}: {trunc}  ·  "
+                        f"{T('errores API', 'API errors')}: {errs}  ·  {T('resueltas', 'resolved')}: {sum(bool(r.get('resolved')) for r in rows)}/{done}")
             ui.put(y + 5, 2, warn, curses.color_pair(C_WARN if (empty or trunc or errs) else C_DIM))
             # progreso por benchmark
             y += 7
@@ -1739,7 +2092,7 @@ class App:
             per = a.get("per_task") or {sp: None for sp in a.get("specs", [])}
             counts: dict[str, int] = {}
             for r in rows:
-                t = str(r.get("task") or "")
+                t = str(r.get("spec") or r.get("task") or "")
                 for sp in per:
                     if sp.split("|")[0] in t.split("|"):
                         counts[sp] = counts.get(sp, 0) + 1
@@ -1749,7 +2102,7 @@ class App:
             for i, (sp, n) in enumerate(per.items()):
                 if y + 1 + i >= h - 8:
                     break
-                c = counts.get(sp, 0) if any(r.get("task") for r in rows) or not rows else "?"
+                c = counts.get(sp, 0) if agentic or any(r.get("task") for r in rows) or not rows else "?"
                 full = isinstance(c, int) and bool(n) and c >= n
                 going = isinstance(c, int) and c and not full
                 mark = "✔" if full else ("▸" if going else "·")
@@ -1759,6 +2112,9 @@ class App:
                 if isinstance(c, int) and n:
                     ui.progress(yy, 7 + nw, 20, c / n)
                 ui.put(yy, 29 + nw, f"{c}/{n if n else '?'}", style)
+                if agentic and isinstance(c, int) and c:
+                    res = sum(bool(r.get("resolved")) for r in rows if r.get("spec") == sp)
+                    ui.put(yy, 36 + nw, f"✔ {res} " + T("resueltas", "resolved"), curses.color_pair(C_OK if res else C_DIM))
             y += 2 + min(len(per), max(0, h - 10 - y))
             # últimas respuestas o log
             room = h - y - 2
@@ -1772,6 +2128,18 @@ class App:
                     lines = [T("(sin log: ejecución lanzada con una versión anterior)", "(no log: run started by an older version)")]
                 for i, l in enumerate(lines[: max(0, room - 1)]):
                     ui.put(y + 1 + i, 2, l[: w - 4], curses.color_pair(C_DIM))
+            elif agentic:                       # the agent's latest steps and finished tasks, newest first
+                ui.section(y, 2, T("Últimos pasos del agente (l: log)", "Latest agent steps (l: log)"), min(w - 4, 100))
+                try:
+                    with open(Path(a["out"]) / "run.log", errors="replace") as fh:
+                        lines = [l.rstrip() for l in fh.read().splitlines()[-400:]
+                                 if " · #" in l or l.startswith(("✔", "✘", "→"))]
+                except OSError:
+                    lines = []
+                for i, l in enumerate(list(reversed(lines))[: max(0, room - 1)]):
+                    st = (curses.color_pair(C_OK) if l.startswith("✔") else curses.color_pair(C_BAD) if l.startswith("✘")
+                          else curses.color_pair(C_ACC) if l.startswith("→") else curses.color_pair(C_WARN) if " ✂ " in l else 0)
+                    ui.put(y + 1 + i, 2, l.strip()[: w - 4], st)
             else:
                 ui.section(y, 2, T("Últimas respuestas del modelo (l: log)", "Latest model answers (l: log)"), min(w - 4, 100))
                 for i, r in enumerate(list(reversed(rows))[: max(0, room - 1)]):
@@ -1786,12 +2154,16 @@ class App:
                         txt = f"{tname[:22]:<22} {flag:<7}{r.get('ct') or 0:>5} tok {r.get('t') or 0:>6.1f}s  {r.get('out', '')}"
                         st = curses.color_pair(C_WARN) if flag != "ok" else 0
                     ui.put(y + 1 + i, 2, txt[: w - 4], st)
-            ui.footer(T("l log/respuestas · ←→ otra ejecución · x cancelar · q volver", "l log/answers · ←→ other run · x cancel · q back"))
+            ui.footer((T("w agente en vivo · ", "w agent live · ") if agentic else "")
+                      + T("l log/respuestas · ←→ otra ejecución · x cancelar · q volver", "l log/answers · ←→ other run · x cancel · q back"))
             ui.scr.refresh()
             k = ui.key(1000)
             if k in ("q", "Q", KEY_ESC):
                 return
             repaint = k is not None
+            if k in ("w", "W") and agentic:
+                self.watch_agent(a["out"])
+                continue
             if k in ("l", "L", "\t"):
                 show_log = not show_log
             elif k in (curses.KEY_RIGHT, "n"):
@@ -1800,17 +2172,20 @@ class App:
                 sel -= 1
             elif k in ("x", "X"):
                 if ui.confirm(T(f"¿Cancelar la ejecución de {a.get('model')} (PID {a['pid']})?", f"Cancel the run of {a.get('model')} (PID {a['pid']})?")):
-                    threading.Thread(target=engine.stop_process, args=(a["pid"],), daemon=True).start()
+                    if a.get("cancel_file"):    # agent runs live in slmbench's own process: ask it to stop (it removes its sandboxes)
+                        Path(a["cancel_file"]).touch()
+                    else:
+                        threading.Thread(target=engine.stop_process, args=(a["pid"],), daemon=True).start()
 
     # ---- leaderboard ----
     # brightness ramp of each mode's hue (xterm 256): a benchmark value goes from a dim tint to the full hue as it grows
-    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141)}
+    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141), 78: (65, 71, 78), 43: (30, 37, 43), 214: (130, 172, 214)}
     LB_MEDAL = (220, 252, 173)                     # gold, silver, bronze
 
     @staticmethod
     def _lb_short(name: str) -> str:
         """Column title of a benchmark: drops the family prefix shared by the whole mode (MultiPL-E, BFCL, RULER NIAH)."""
-        for pre in ("MultiPL-E ", "BFCL ", "RULER NIAH "):
+        for pre in ("MultiPL-E ", "BFCL ", "RULER NIAH ", "SWE-bench Lite · "):
             name = name.replace(pre, "")
         return {"JavaScript": "JS", "LiveCodeBench": "LiveCode", "Parallel multiple": "Par. multi"}.get(name, name)
 
@@ -1848,6 +2223,10 @@ class App:
             lang = i18n.get_lang()
             tabs = [(m, cat.MODES[m].get(lang, t), lb.ranked(entries, m)) for m, t in lb.modes()]
             tabs = [t for t in tabs if t[2]]
+            if lb.has_harnesses(entries):                  # the agent mode seen from the agents' side
+                tabs.append(("harness", "Harnesses", [h for h in lb.harness_table(entries) if h["models"]]))
+            if lb.has_adapters(entries):                   # LoRA adapters against their base model
+                tabs.append(("adapters", "Adapters", lb.adapter_rows(entries)))
             h, w = ui.size()
             ui.scr.erase()
             ui.header("Leaderboard")
@@ -1905,10 +2284,41 @@ class App:
             ui.put(3, x0, "─" * W, ui.color(ui.RULE))
             if under:
                 ui.put(3, under[0], "━" * under[1], ui.color(hue, None, True))
-            desc = cat.MODES[mode].get(f"desc_{lang}") or cat.MODES[mode].get("desc_en", "")
+            desc = (cat.MODES[mode].get(f"desc_{lang}") or cat.MODES[mode].get("desc_en", "")) if mode in cat.MODES else \
+                T("Cada adaptador LoRA frente a su modelo base: ganancia en puntos sobre los benchmarks que ambos tienen medidos.",
+                  "Each LoRA adapter against its base model: gain in points on the benchmarks both have measured.") if mode == "adapters" else \
+                T("SWE-bench Lite con cada harness: el mismo modelo resuelve más o menos tareas según el agente que lo lleve.",
+                  "SWE-bench Lite with each harness: the same model resolves more or fewer tasks depending on the agent that drives it.")
             right = T(f"{n_models} modelos · {len(entries)} filas", f"{n_models} models · {len(entries)} rows")
             ui.put(4, x0, desc[: max(0, W - len(right) - 3)], ui.color(250) | _italic())
             ui.put(4, x0 + W - len(right), right, ui.color(ui.MUTED))
+            if mode in ("harness", "adapters"):
+                if mode == "harness":
+                    self._lb_harnesses(entries, rows, x0, W, h, hue)
+                else:
+                    self._lb_adapters(rows, x0, W, h, hue)
+                ui.footer(T("←→ modo · o abrir HTML · s ajustes · q volver", "←→ mode · o open HTML · s settings · q back"))
+                ui.scr.refresh()
+                k = ui.key(500 if flash else 2000)
+                if k in ("q", "Q", KEY_ESC):
+                    return
+                if k in (curses.KEY_RIGHT, "\t", "l"):
+                    mode_i, sel, top, col0 = mode_i + 1, 0, 0, 0
+                elif k in (curses.KEY_LEFT, curses.KEY_BTAB, "h"):
+                    mode_i, sel, top, col0 = mode_i - 1, 0, 0, 0
+                elif isinstance(k, str) and k.isdigit() and 1 <= int(k) <= len(tabs):
+                    mode_i, sel, top, col0 = int(k) - 1, 0, 0, 0
+                elif k in ("o", "O"):
+                    try:
+                        lb.open_html(lb.rebuild(s)["html"])
+                        opened = (time.time(), True)
+                    except Exception as ex:  # noqa: BLE001
+                        opened = (time.time(), False)
+                        ui.message(str(ex), C_BAD, "Error")
+                elif k in ("s", "S"):
+                    self.leaderboard_settings()
+                    stamp = None
+                continue
             # columns: rank · model · score + meter · tok/s · one per benchmark (the ones that don't fit scroll with < >)
             keys = [k for k in lb.mode_keys(mode) if any(k in e["benchmarks"] for e, _ in rows)]
             catl = cat.catalog()
@@ -1989,7 +2399,7 @@ class App:
                 name = e["name"] if len(e["name"]) <= nw else "…" + e["name"][-(nw - 1):]
                 ui.put(y, xm, name, ui.color(255 if sc["ranked"] else 250, bg, True))
                 facts = [x for x in (lb.params_txt(m) if m.get("params_b") else "", m.get("quant", ""),
-                                     f"{m['size_gb']} GB" if m.get("size_gb") else "") if x]
+                                     f"{m['size_gb']} GB" if m.get("size_gb") else "", "LoRA" if m.get("lora") else "") if x]
                 ft = " · ".join(facts)
                 ui.put(y + 1, xm, ft[:nw], ui.color(ui.MUTED, bg))
                 if not sc["ranked"]:
@@ -2022,7 +2432,8 @@ class App:
                 more.append(T(f"‹ › más benchmarks ({hidden_l + hidden_r} ocultos)", f"‹ › more benchmarks ({hidden_l + hidden_r} hidden)"))
             if any(not (e["benchmarks"].get(k) or {}).get("full", True) for e, _ in rows for k in keys):
                 more.append(T("* medido sobre una muestra", "* measured on a sample"))
-            more.append(T("puntuación = media de los benchmarks del modo", "score = mean of the mode's benchmarks"))
+            more.append(T("puntuación = su mejor harness", "score = its best harness") if mode == "agent"
+                        else T("puntuación = media de los benchmarks del modo", "score = mean of the mode's benchmarks"))
             ui.hintline("  ·  ".join(more))
             ui.footer(T("←→ modo · ↑↓ fila · Enter ficha · <> columnas · o abrir HTML · d quitar · s ajustes · q volver",
                         "←→ mode · ↑↓ row · Enter card · <> columns · o open HTML · d remove · s settings · q back"))
@@ -2073,6 +2484,121 @@ class App:
                 self.leaderboard_settings()
                 stamp = None
 
+    def _lb_adapters(self, rows: list[dict], x0: int, W: int, h: int, hue: int) -> None:
+        """The Adapters tab: a row per model served with a LoRA adapter (2 lines: the adapter and its base model), its mean
+        gain over the base and, per mode, its score with the gain under it."""
+        ui, lb = self.ui, leaderboard
+        hd = ui.color(ui.MUTED, None, True)
+        shown = [(m, t) for m, t in lb.modes() if any(m in r["modes"] for r in rows)]
+        nw = max(24, min(40, W // 3))
+        xg = x0 + 5 + nw + 2
+        cw = max(10, min(14, (W - (xg - x0) - 10) // max(1, len(shown))))
+        xm = xg + 10
+        y = 6
+        ui.put(y, x0 + 1, "#", hd)
+        ui.put(y, x0 + 5, T("ADAPTADOR · BASE", "ADAPTER · BASE"), hd)
+        ui.put(y, xg, T("GANANCIA", "GAIN").rjust(8), hd)
+        for j, (m, t) in enumerate(shown):
+            if xm + (j + 1) * cw > x0 + W:
+                break
+            ui.put(y, xm + j * cw, t[: cw - 1].rjust(cw - 1), ui.color(self.MODE_COLOR.get(m, ui.MUTED), None, True))
+        ui.put(y + 1, x0, "─" * W, ui.color(ui.RULE))
+        y += 2
+        for i, r in enumerate(rows):
+            if y + 1 >= h - 3:
+                break
+            e, base = r["entry"], r["base"]
+            name = e["name"] if len(e["name"]) <= nw else "…" + e["name"][-(nw - 1):]
+            ui.put(y, x0 + 1, f"{i + 1:>2}", ui.color(ui.MUTED))
+            ui.put(y, x0 + 5, name, ui.color(255, None, True))
+            bt = (("↳ " + base["name"]) if base else (("↳ " + r["base_name"] + T(" (sin medir)", " (not measured)")) if r["base_name"]
+                                                   else "↳ " + T("base desconocida", "unknown base")))
+            ui.put(y + 1, x0 + 5, bt[:nw], ui.color(ui.MUTED))
+            g = r["gain"]
+            ui.put(y, xg, lb.signed(g).rjust(8), ui.color(78 if (g or 0) > 0.0005 else 203 if (g or 0) < -0.0005 else 245, None, True))
+            for j, (m, _t) in enumerate(shown):
+                cx = xm + j * cw
+                if cx + cw > x0 + W:
+                    break
+                x = r["modes"].get(m)
+                if not x:
+                    ui.put(y, cx, "–".rjust(cw - 1), ui.color(240))
+                    continue
+                ui.put(y, cx, (f"{x['score'] * 100:.1f}" + ("*" if x["partial"] else "")).rjust(cw - 1), self._lb_heat(x["score"], hue))
+                if x["delta"] is not None:
+                    d = x["delta"]
+                    ui.put(y + 1, cx, lb.signed(d).rjust(cw - 1), ui.color(78 if d > 0.0005 else 203 if d < -0.0005 else 245))
+            y += 3
+        ui.hintline(T("ganancia = puntos sobre el modelo base, en los benchmarks que ambos tienen medidos · * medido sobre una muestra",
+                      "gain = points over the base model, on the benchmarks both have measured · * measured on a sample"))
+
+    def _lb_harnesses(self, entries: list[dict], hk: list[dict], x0: int, W: int, h: int, hue: int) -> None:
+        """The Harnesses tab: a row per harness (version, models, mean resolved with a meter, best model, how the model acts)
+        and the models × harnesses table, each model's best harness starred."""
+        ui, lb = self.ui, leaderboard
+        catl = cat.catalog()
+        lang = i18n.get_lang()
+        hd = ui.color(ui.MUTED, None, True)
+        nw, mw = 16, max(8, min(18, W // 7))
+        xv, xm, xr = x0 + 2 + nw, x0 + 10 + nw, x0 + 18 + nw
+        xb = xr + 8 + mw
+        y = 6
+        ui.put(y, x0 + 2, "HARNESS", hd)
+        ui.put(y, xv, T("VERS.", "VER."), hd)
+        ui.put(y, xm, T("MODELOS", "MODELS"), hd)
+        ui.put(y, xr, T("RESUELTAS (MEDIA)", "MEAN RESOLVED"), hd)
+        ui.put(y, xb, T("MEJOR MODELO", "BEST MODEL"), hd)
+        ui.put(y + 1, x0, "─" * W, ui.color(ui.RULE))
+        y += 2
+        for hh in sorted(hk, key=lambda r: -(r["mean"] or 0)):
+            if y + 1 >= h - 3:
+                break
+            ui.put(y, x0 + 2, hh["name"][:nw - 1], ui.color(hue, None, True))
+            ui.put(y, xv, (hh["version"] or "–")[:7], ui.color(250))
+            ui.put(y, xm, str(hh["models"]).rjust(4), ui.color(250))
+            v = hh["mean"]
+            ui.put(y, xr, (f"{v * 100:.1f}" if v is not None else "–").rjust(5), ui.color(255, None, True))
+            self._lb_bar(y, xr + 7, mw, v, hue)
+            b = hh["best"]
+            if b and b["value"]:
+                txt = f"{b['name']} {b['quant']} · {b['value'] * 100:.1f}%" + ("" if b.get("full") else f" (n={b['n']})")
+                ui.put(y, xb, txt[: max(0, x0 + W - xb)], ui.color(250))
+            cost = (f"  ·  {lb._num(hh['turns'])} " + T("turnos", "turns") + f" · {lb._tok(hh['tokens'])} tokens "
+                    + T("por tarea", "per task")) if hh.get("turns") is not None else ""
+            ui.put(y + 1, x0 + 4, ((hh.get(f"note_{lang}") or hh["note_en"]) + cost)[: W - 6], ui.color(ui.MUTED) | _italic())
+            y += 3
+        rows = lb.harness_rows(entries)
+        keys = [r["key"] for r in hk]
+        if not rows or y + 3 >= h - 3:
+            return
+        y += 1
+        cw = max(12, min(18, (W - 34) // max(1, len(keys) + 1)))
+        ui.put(y, x0 + 2, T("MODELO", "MODEL"), hd)
+        for j, k in enumerate(keys):
+            ui.put(y, x0 + 30 + j * cw, catl[k].get("harness_name", k)[: cw - 1].rjust(cw - 1), hd)
+        ui.put(y, x0 + 30 + len(keys) * cw, T("MEJOR", "BEST").rjust(cw - 1), hd)
+        ui.put(y + 1, x0, "─" * W, ui.color(ui.RULE))
+        y += 2
+        for e in rows:
+            if y >= h - 3:
+                break
+            bk = (lb.best_harness(e) or (None, 0))[0]
+            name = f"{e['name']} {e['meta'].get('quant', '')}".strip()
+            ui.put(y, x0 + 2, (name if len(name) <= 27 else "…" + name[-26:]), ui.color(255, None, True))
+            for j, k in enumerate(keys):
+                r = e["benchmarks"].get(k)
+                cx = x0 + 30 + j * cw
+                if not r or r.get("value") is None:
+                    ui.put(y, cx, "–".rjust(cw - 1), ui.color(240))
+                    continue
+                val = ("★ " if k == bk else "") + f"{r['value'] * 100:.1f}" + ("" if r.get("full") else "*")
+                ui.put(y, cx, val.rjust(cw - 1), self._lb_heat(r["value"], hue) | (curses.A_BOLD if k == bk else 0))
+            ui.put(y, x0 + 30 + len(keys) * cw, (catl[bk].get("harness_name", bk) if bk else "–").rjust(cw - 1),
+                   ui.color(hue if bk else ui.MUTED, None, True))
+            y += 1
+        ui.hintline(T("★ el mejor harness de cada modelo · * medido sobre una muestra de tareas · media = sobre los modelos medidos con ese harness",
+                      "★ each model's best harness · * measured on a sample of the tasks · mean = over the models measured with that harness"))
+
     def leaderboard_card(self, e: dict, entries: list[dict], width: int) -> list:
         """A row of the leaderboard in detail: every mode's score and rank, each benchmark, speed, run settings and the other
         quantizations of the same model. Lines of (text, curses attr) for md_pager."""
@@ -2118,6 +2644,7 @@ class App:
                 continue
             hue = self.MODE_COLOR.get(mode, 209)
             L += [[], rule(cat.MODES[mode].get(lang, mode), hue), []]
+            nw = min(32, max(20, *(len(catl.get(k, {}).get("name", k)) for k in keys)))
             for k in keys:
                 r = e["benchmarks"][k]
                 extra = []
@@ -2126,11 +2653,11 @@ class App:
                 extra.append(f"n={r.get('n')}" + ("" if r.get("full") else " · " + T("muestra", "sample")))
                 if r.get("stderr"):
                     extra.append(f"± {r['stderr'] * 100:.1f}")
-                L.append([("  " + catl.get(k, {}).get("name", k)[:20].ljust(21), mut), (lb.pct(r.get("value"), 1).rjust(7), self._lb_heat(r.get("value"), hue)),
+                L.append([("  " + catl.get(k, {}).get("name", k)[:nw].ljust(nw + 1), mut), (lb.pct(r.get("value"), 1).rjust(7), self._lb_heat(r.get("value"), hue)),
                           ("  ", 0)] + meter(r.get("value"), mw, hue) + [("  " + " · ".join(extra), dim)])
             sp = lb.mode_speed(e, mode)
             if sp.get("gen_tps"):
-                L.append([("  " + T("Velocidad", "Speed").ljust(21), mut), (f"{sp['gen_tps']}".rjust(7), ui.color(255, None, True)), (" tok/s", dim)]
+                L.append([("  " + T("Velocidad", "Speed").ljust(nw + 1), mut), (f"{sp['gen_tps']}".rjust(7), ui.color(255, None, True)), (" tok/s", dim)]
                          + ([("  ·  prompt ", dim), (f"{sp['prompt_tps']} tok/s", mut)] if sp.get("prompt_tps") else [])
                          + ([(f"  ·  {sp['workers']} " + T("en paralelo", "in parallel"), dim)] if sp.get("workers") else []))
         b = list(e["benchmarks"].values())
@@ -2206,18 +2733,48 @@ class App:
                 Field("", T("Modo", "Mode"), "section"),
                 Field("mode", T("Modo de evaluación", "Evaluation mode"), "choice", s.mode,
                       [(m, f"{info[i18n.get_lang()]} · {info['desc_' + i18n.get_lang()]}") for m, info in cat.MODES.items()] + [("all", T("Todo", "Everything"))],
-                      hint=T("General · Programación (en el sandbox) · Herramientas (BFCL) · Contexto largo (RULER) · Todo",
-                             "General · Coding (in the sandbox) · Tool calling (BFCL) · Long context (RULER) · Everything")),
+                      hint=T("General · Programación (en el sandbox) · Herramientas (BFCL) · Contexto largo (RULER) · Agente (SWE-bench Lite) · "
+                             "Todo (salvo el agente)",
+                             "General · Coding (in the sandbox) · Tool calling (BFCL) · Long context (RULER) · Agent (SWE-bench Lite) · "
+                             "Everything (but the agent)")),
                 Field("", T("Benchmarks", "Benchmarks"), "section"),
             ]
-            for k in mode_keys:
+            agentic = s.mode == "agent"
+            if agentic:                                 # one benchmark per harness: picked in a pop-up
+                miss = cat.missing_tools(mode_keys[0])
+                names = ", ".join(catl[k]["harness_name"] for k in chosen) if len(chosen) < len(mode_keys) else T("todos", "all")
+                fields.append(Field("harness", "Harness: " + names + "  ▸" + (f"  ⚠ {miss[0]}" if miss else ""), "action", "",
+                                    hint=T("Enter: elegir el agente que usa el modelo (mini-SWE-agent, Pi, OpenCode o todos) · ? ficha",
+                                           "Enter: pick the agent the model uses (mini-SWE-agent, Pi, OpenCode or all) · ? card")))
+            for k in ([] if agentic else mode_keys):
                 v = catl[k]
                 miss = cat.missing_tools(k)
                 label = f"{v['name']}" + (f"  ⚠ {', '.join(m.split(' (')[0] for m in miss)}" if miss else "")
                 fields.append(Field(f"b:{k}", label, "bool", k in chosen,
                                     hint=(f"⚠ {T('falta', 'missing')}: {', '.join(miss)}  ·  " if miss else "")
                                     + f"{cat.describe(k, i18n.get_lang())}  ·  {v['n']:,} {T('tareas', 'tasks')} · `{v['metric']}` · ? = {T('ficha', 'card')}"))
-            fields += [
+            if agentic:
+                fields += [
+                    Field("", T("Opciones del agente", "Agent options"), "section"),
+                    Field("ld_max_samples", T("Tareas (0 = todas las que tienen imagen)", "Tasks (0 = every task with an image)"), "int", s.ld_max_samples,
+                          hint=T("Cada tarea tarda minutos (el agente da decenas de pasos y luego se pasan los tests): empieza con 5–20. "
+                                 "Siempre las mismas y en el mismo orden, mezclando proyectos.",
+                                 "Each task takes minutes (the agent takes dozens of steps, then the tests run): start with 5–20. "
+                                 "Always the same ones in the same order, mixing projects.")),
+                    Field("agent_max_tokens", T("Máx. tokens por respuesta", "Max tokens per answer"), "int", s.agent_max_tokens,
+                          hint=T("Razonamiento incluido. Si se corta, el paso no trae comando y se pierde.", "Reasoning included. If cut, the step has no command and is wasted.")),
+                    Field("reasoning_budget", T("Presupuesto de razonamiento", "Reasoning budget"), "int", s.reasoning_budget,
+                          hint=T("-1 = sin límite · 0 = sin razonar · N = tope de tokens de razonamiento por respuesta", "-1 = unlimited · 0 = no reasoning · N = max reasoning tokens per answer")),
+                    Field("temperature", T("Temperatura", "Temperature"), "float", s.temperature),
+                    Field("agent_step_limit", T("Máx. pasos por tarea", "Max steps per task"), "int", s.agent_step_limit,
+                          hint=T("Llamadas al modelo por tarea; al llegar, la tarea termina con lo que haya.", "Model calls per task; when reached, the task ends with what there is.")),
+                    Field("agent_timeout", T("Tiempo por tarea (s)", "Time per task (s)"), "int", s.agent_timeout,
+                          hint=T("Para el agente; la evaluación con los tests va aparte.", "For the agent; grading with the tests comes on top.")),
+                    Field("agent_workers", T("Tareas en paralelo", "Parallel tasks"), "int", s.agent_workers,
+                          hint=T("Como mucho 3. Cada una suma 4 GB de RAM al sandbox (y su imagen al disco); no más que los slots (-np) del servidor.",
+                                 "At most 3. Each one adds 4 GB of RAM to the sandbox (and its image to the disk); no more than the server slots (-np).")),
+                ]
+            fields += ([] if agentic else [
                 Field("ld_extra_tasks", T("Otras tareas de lighteval", "Other lighteval tasks"), "text", s.ld_extra_tasks,
                       hint=T("Separadas por comas, p. ej. aime24|0. Solo generativas.", "Comma-separated, e.g. aime24|0. Generative only.")),
                 Field("", T("Opciones", "Options"), "section"),
@@ -2234,6 +2791,7 @@ class App:
                              "5 = pass@1 and pass@5 (5× more requests for coding and tool calling) · 1 = pass@1 only, faster. "
                              "All at the temperature above: at 0 the 5 come out nearly identical and pass@5 ≈ pass@1.")),
                 Field("workers", T("Peticiones en paralelo", "Parallel requests"), "int", s.workers, hint=T("No más que los slots (-np) del servidor.", "No more than the server slots (-np).")),
+            ]) + [
                 Field("", T("Modelo a evaluar", "Model to evaluate"), "section"),
                 Field("", "", "info", f"{self.current_model() or '—'} @ {s.base_url}"),
                 Field("model", T("Cambiar el modelo a evaluar…", "Change the model to evaluate…"), "action", ""),
@@ -2245,14 +2803,18 @@ class App:
             def pull(fs):
                 for f in fs:
                     if f.key in ("ld_extra_tasks", "ld_max_samples", "ld_max_new_tokens", "reasoning_budget", "temperature", "workers",
-                                 "passk_n"):
+                                 "passk_n", "agent_max_tokens", "agent_step_limit", "agent_timeout", "agent_workers"):
                         setattr(s, f.key, f.value)
+                if agentic:                             # the harness is picked in its pop-up, not with checkboxes
+                    return
                 picked = [f.key[2:] for f in fs if f.key.startswith("b:") and f.value]
                 s.benchmarks = [] if set(picked) == set(mode_keys) else picked
 
             def explain_key(f):
                 if f.key.startswith("b:"):
                     self.show_card(f.key[2:])
+                elif f.key == "harness":
+                    self.show_card(chosen[0])
 
             def on_change(key, fs):
                 if key == "mode":
@@ -2273,6 +2835,8 @@ class App:
                 return
             if key == "model":
                 self.screen_model()
+            elif key == "harness":
+                self.pick_harness(mode_keys, chosen)
             elif key == "setup":
                 r = self.live_task(T(f"Preparando el modo {s.mode}", f"Preparing mode {s.mode}"), lambda on_line, cancel: engine.setup(s.mode, on_line=on_line))
                 if r["res"]:
@@ -2295,6 +2859,12 @@ class App:
                     ui.message(T(f"No hay conexión con {s.base_url}. Elige el modelo en «Modelo a evaluar».",
                                  f"No connection to {s.base_url}. Pick the model in \"Model to evaluate\"."), C_BAD)
                     continue
+                if agentic:
+                    why = cat.missing_tools(keys[0])
+                    if why:
+                        ui.message(T(f"El modo agente no está listo: {why[0]}. Usa «Preparar el modo».",
+                                     f"Agent mode isn't ready: {why[0]}. Use \"Prepare the mode\"."), C_BAD, "Sandbox")
+                        continue
                 if any(k in ("lcb",) or catl[k].get("language") for k in keys) and not ui.confirm(
                         T("Los benchmarks de código ejecutan el código que genera el modelo dentro del sandbox (sbx). ¿Continuar?",
                           "Coding benchmarks run model-generated code inside the sandbox (sbx). Continue?"), default=True):
@@ -2302,8 +2872,10 @@ class App:
                 model = self.current_model()
                 prog: dict = {}
                 r = self.live_task(f"{T('Evaluando', 'Evaluating')} {model}", lambda on_line, cancel: engine.run(s, model, specs, on_line=on_line, cancel=cancel),
-                                   sub=", ".join(keys), progress=True,
+                                   sub=", ".join(keys), progress=True, background=True,
                                    cancel_prompt=T("¿Cancelar? Se guarda lo que haya terminado.", "Cancel? Finished results are kept."))
+                if r.get("background"):                  # back to the main menu while it runs
+                    return
                 if r["err"]:
                     ui.message(f"Error: {r['err']}", C_BAD)
                     continue
@@ -2313,6 +2885,57 @@ class App:
                     ui.message(T(f"Peticiones fallidas: {meta['api_errors']}", f"Failed requests: {meta['api_errors']}") + "\n" + (meta.get("api_error_examples") or [""])[0][:200]
                                + "\n\n" + T("Detalle: Resultados → l (errores y log).", "Details: Results → l (errors and log)."), C_WARN)
                 ui.md_pager(f"{T('Informe', 'Report')} · {Path(out).name}", (Path(out) / "report.md").read_text())
+
+    def export_runs(self, runs: list[dict], sel: int, marked: set) -> None:
+        """Pop-ups: which runs (marked / this one / every agent run / every run) and the format; then the dataset file."""
+        from . import export
+        ui, s = self.ui, self.s
+        done = [r for r in runs if not r.get("incomplete")]
+        agentic = [r for r in done if (Path(r["dir"]) / "agent").is_dir()]
+        scopes = []
+        if marked:
+            scopes.append((T(f"Las {len(marked)} marcadas", f"The {len(marked)} marked runs"), [d for d in marked]))
+        scopes.append((T("Esta ejecución: ", "This run: ") + Path(runs[sel]["dir"]).name[:40], [runs[sel]["dir"]]))
+        if agentic:
+            scopes.append((T(f"Todas las del modo agente ({len(agentic)})", f"Every agent-mode run ({len(agentic)})"), [r["dir"] for r in agentic]))
+        scopes.append((T(f"Todas las ejecuciones terminadas ({len(done)})", f"Every finished run ({len(done)})"), [r["dir"] for r in done]))
+        hint = T("Una fila por intento: la tarea, la sesión completa (razonamiento, respuestas, tool calls y salidas), la solución "
+                 "(el parche en el modo agente) y si es correcta.",
+                 "One row per attempt: the task, the whole session (reasoning, answers, tool calls and outputs), the solution "
+                 "(the patch in the agent mode) and whether it's correct.")
+        i = ui.choose(T("Exportar como dataset", "Export as a dataset"), [(l, hint) for l, _d in scopes])
+        if i is None:
+            return
+        dirs = scopes[i][1]
+        f = ui.choose(T("Formato", "Format"), [
+            ("JSONL", T("Un objeto JSON por línea: fácil de leer y de procesar línea a línea.", "One JSON object per line: easy to read and stream.")),
+            ("Parquet", T("Columnar y comprimido (zstd): para pandas, DuckDB o subirlo a Hugging Face.", "Columnar and compressed (zstd): for pandas, DuckDB or the Hugging Face Hub."))])
+        if f is None:
+            return
+        fmt = ("jsonl", "parquet")[f]
+        res, err = self.busy(T("Exportando", "Exporting"), T(f"Leyendo {len(dirs)} ejecuciones…", f"Reading {len(dirs)} runs…"),
+                             lambda: export.export(dirs, fmt, None, s.out_dir, on_line=lambda _l: None))
+        if err:
+            if str(err) != T("cancelado", "cancelled"):
+                ui.message(str(err), C_BAD)
+            return
+        path, n = res
+        ui.message(T(f"✔ {n} filas → {path}", f"✔ {n} rows → {path}"), C_OK, T("Dataset exportado", "Dataset exported"))
+
+    def pick_harness(self, mode_keys: list[str], chosen: list[str]) -> None:
+        """Pop-up: which agent drives the model on SWE-bench Lite (one, or all of them on the same tasks)."""
+        catl = cat.catalog()
+        items = [(f"{catl[k]['harness_name']:<16} {catl[k]['harness_note_' + i18n.get_lang()]}", cat.describe(k, i18n.get_lang()))
+                 for k in mode_keys]
+        items.append((T("Todos", "All") + f"  ({len(mode_keys)}× " + T("tiempo", "time") + ")",
+                      T("Los tres harnesses sobre las mismas tareas: compara el mismo modelo con un agente solo-bash y dos con tool calls.",
+                        "The three harnesses on the same tasks: compares the same model with a bash-only agent and two tool-calling ones.")))
+        sel = len(mode_keys) if len(chosen) == len(mode_keys) else mode_keys.index(chosen[0])
+        i = self.ui.choose(T("Harness del agente", "Agent harness"), items, sel=sel)
+        if i is None:
+            return
+        self.s.benchmarks = [] if i == len(mode_keys) else [mode_keys[i]]
+        config.save(self.s)
 
     def show_card(self, key):
         from .benchmarks import explore
@@ -2331,7 +2954,24 @@ class App:
                 return box["text"]
             return "⋯ " + T("Cargando la tarea de muestra…", "Loading the sample task…")
 
-        ui.md_pager(cat.catalog()[key]["name"], "", head=lambda w: self.card_view(key, text(), w),
+        wide = {"on": False}
+
+        def side(width):                  # wide terminal: the facts stay on the left, only the sample task scrolls
+            wide["on"] = width >= 128
+            if not wide["on"]:
+                return None
+            lw = max(52, min(66, int(width * 0.4)))
+            return self.card_head(key, lw, rule=False), lw
+
+        def body(width):
+            if wide["on"]:                    # the pane next to the facts panel (md_pager gives the width that's left)
+                hue = self.MODE_COLOR.get(cat.catalog()[key]["mode"], 209)
+                return [[], [(T("Tarea de muestra", "Sample task"), self.ui.color(hue, None, True)),
+                             (T(" · lo que recibe el modelo", " · what the model receives"), curses.color_pair(C_DIM))],
+                        [("─" * width, curses.color_pair(C_DIM))]] + mdview.render(text(), width)
+            return self.card_view(key, text(), width)
+
+        ui.md_pager(cat.catalog()[key]["name"], "", head=body, side=side,
                     live=lambda: (box["text"] is None, box["text"] is None))
 
     def card_view(self, key: str, sample_md: str, width: int) -> list:
@@ -2368,7 +3008,7 @@ class App:
         return [fit(left[i] if i < len(left) else [], lw) + [(" ", 0), sep, (" ", 0)] + (right[i] if i < len(right) else [])
                 for i in range(rows)]
 
-    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141}    # the logo gradient, one hue per mode
+    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141, "agent": 78, "harness": 43, "adapters": 214}    # the logo gradient, one hue per mode
 
     def card_head(self, key: str, width: int, rule: bool = True) -> list:
         """Styled header of a benchmark card: mode badge, name, a row of fact tiles, description, links."""
@@ -2530,6 +3170,171 @@ class App:
                 continue
             ui.md_pager(f"{task['name']} · #{smp['index']}", md)
 
+    # ---- trayectorias de agentes (mini-SWE-agent, Pi, OpenCode) ----
+    def screen_traces(self):
+        """9 · Agent traces: the runs of the agent mode (newest first) -> their tasks -> every step. x exports them."""
+        from . import trajectory as tr
+        ui, s = self.ui, self.s
+        sel = 0
+        while True:
+            runs, err = self.busy(T("Trazas del agente", "Agent traces"), T("Buscando ejecuciones del modo agente…", "Looking for agent-mode runs…"),
+                                  lambda: [r for r in engine.list_runs(s.out_dir) if tr.has_trajectories(r["dir"])])
+            if err:
+                return
+            if not runs:
+                ui.message(T("Aún no hay ejecuciones del modo agente. Lánzalas en «2 · Lanzar benchmarks» con el modo Agente.",
+                             "No agent-mode runs yet. Start one in \"2 · Run benchmarks\" with the Agent mode."), C_WARN, T("Trazas", "Traces"))
+                return
+            items = []
+            for r in runs:
+                heads = "  ".join(f"{(cat.catalog().get(cat.spec_to_key(t) or '', {}).get('harness_name') or t.split('|')[0])} {v * 100:.0f}%"
+                                  for t, v in r["heads"].items())
+                items.append((f"{r['date'][:16].replace('T', ' '):<16}  {_run_name(r)[:30]:<30}  "
+                              + (heads or T("incompleta", "incomplete")), r["dir"]))
+            k = ui.menu(T("Trazas del agente", "Agent traces"), items, sel=sel,
+                        sub=T("Elige una ejecución: sus tareas y cada paso del agente", "Pick a run: its tasks and every step of the agent"),
+                        footer=T("↑↓ mover · Enter abrir · q volver", "↑↓ move · Enter open · q back"))
+            if k is None:
+                return
+            sel = k
+            self.screen_trajectories(runs[k]["dir"])
+
+    def watch_agent(self, run_dir: str):
+        """The harness at work, live: the session of the task being solved (reasoning, answer, command or tool call, and
+        what came back), from what slmbench's relay sees. Follows the newest task unless t picks another one."""
+        from . import trajectory as tr
+        ui = self.ui
+        catl = cat.catalog()
+        hs = {k: v.get("harness_name", k) for k, v in catl.items() if v.get("mode") == "agent"}
+        state = {"rows": [], "size": -1, "chosen": None, "detailed": False}
+
+        def refresh():
+            try:
+                size = (Path(run_dir) / "answers.jsonl").stat().st_size
+            except OSError:
+                size = 0
+            if size != state["size"]:
+                state["size"], state["rows"] = size, tr.live_rows(run_dir)
+
+        def current():
+            ts = tr.live_tasks(state["rows"])
+            return state["chosen"] if state["chosen"] in ts else (ts[-1] if ts else None)
+
+        def finished(cur) -> bool:
+            done = tr._task_rows(Path(run_dir))
+            return (catl.get(cur[0], {}).get("harness"), cur[1]) in done
+
+        def running() -> bool:
+            return any(a.get("out") == run_dir for a in engine.active_runs())
+
+        def build(w):
+            refresh()
+            cur = current()
+            if not cur:
+                return mdview.render(T("# Agente en vivo\n\nEsperando la primera llamada al modelo…",
+                                       "# Agent live\n\nWaiting for the first model call…"), w)
+            done = finished(cur) or not running()
+            if state["detailed"]:                   # e: the whole session, to scroll through
+                title = hs.get(cur[0], cur[0]) + ("" if state["chosen"] else T(" · siguiendo la tarea más reciente", " · following the newest task"))
+                return mdview.render(tr.live_markdown(state["rows"], cur[0], cur[1], title, done), w)
+            return tr.live_lines(state["rows"], cur[0], cur[1], hs.get(cur[0], cur[0]), done, w, ui.size()[0])
+
+        def live():
+            refresh()
+            go = running()
+            return (state["size"], go), go
+
+        while True:
+            def title():
+                cur = current()
+                return T("Agente en vivo", "Agent live") + (f" · {cur[1]} [{hs.get(cur[0], cur[0])}]" if cur else "")
+
+            k = ui.md_pager(title, "", head=build, live=live, follow=True, keys=("t", "T", "e", "E"),
+                            hint=(T("e vista compacta · t otra tarea · G seguir", "e compact view · t other task · G follow")
+                                  if state["detailed"] else
+                                  T("e transcripción completa · t otra tarea", "e full transcript · t other task")))
+            if k in ("e", "E"):
+                state["detailed"] = not state["detailed"]
+                continue
+            if k not in ("t", "T"):
+                return
+            tasks = tr.live_tasks(state["rows"])
+            if not tasks:
+                continue
+            items = [(T("▸ Seguir siempre la más reciente", "▸ Always follow the newest"), "")]
+            items += [(f"{iid}  [{hs.get(key, key)}]", "") for key, iid in tasks]
+            cur = current()
+            i = ui.choose(T("Tarea", "Task"), items, sel=0 if state["chosen"] is None else 1 + tasks.index(cur))
+            if i is not None:
+                state["chosen"] = None if i == 0 else tasks[i - 1]
+
+    def screen_trajectories(self, folder: str):
+        """Agent runs: tasks (resolved or not, steps, cut answers) -> the task's steps -> one step: reasoning, response,
+        bash command or tool call, and what came back. n/p move between steps without going back to the list."""
+        from . import trajectory as tr
+        ui = self.ui
+        tasks, err = self.busy(T("Trayectorias", "Trajectories"), T("Leyendo las trayectorias…", "Reading the trajectories…"),
+                               lambda: tr.find(folder))
+        if err:
+            if str(err) != T("cancelado", "cancelled"):
+                ui.message(f"{type(err).__name__}: {err}", C_BAD)
+            return
+        if not tasks:
+            ui.message(T("No hay trayectorias (*.traj.json, *.pi.jsonl) en esta carpeta.",
+                         "No trajectories (*.traj.json, *.pi.jsonl) in this folder."), C_WARN)
+            return
+        graded = [t for t in tasks if t["resolved"] is not None]
+        sub = (T(f"{sum(t['resolved'] for t in graded)}/{len(graded)} resueltas", f"{sum(t['resolved'] for t in graded)}/{len(graded)} resolved")
+               if graded else T("sin evaluar", "not graded")) + " · " + T("Enter: pasos de la tarea", "Enter: the task's steps")
+        sel = 0
+        while True:
+            i = ui.menu(T("Trayectorias", "Trajectories") + f" · {Path(folder).name}",
+                        [(tr.task_line(t), f"{t['agent']} · {t['path']}") for t in tasks], sel=sel, sub=sub)
+            if i is None:
+                return
+            sel = i
+            self._trajectory_task(folder, tasks[i])
+
+    def _trajectory_task(self, folder: str, task: dict):
+        from . import trajectory as tr
+        ui = self.ui
+        try:
+            t = tr.load_in(folder, task["path"])
+        except (OSError, ValueError) as e:
+            ui.message(f"{type(e).__name__}: {e}", C_BAD)
+            return
+        steps = t["steps"]
+        head = [(T("▸ Resumen: evaluación, parche final y tarea", "▸ Summary: grading, final patch and task"), ""),
+                (T("▸ Trayectoria completa (salidas largas recortadas)", "▸ Whole trajectory (long outputs clipped)"), "")]
+        items = head + [(tr.step_line(s, last=s is steps[-1]), T("🧠 razonamiento · ✂ cortada por max_tokens · rc = código de salida del comando",
+                                            "🧠 reasoning · ✂ cut by max_tokens · rc = the command's exit code")) for s in steps]
+        sel = 0
+        while True:
+            i = ui.menu(f"{t['id']} · {len(steps)} " + T("pasos", "steps"), items, sel=sel,
+                        sub=f"{t['agent']} · exit: {t['exit_status']} · " + T("Enter: ver el paso", "Enter: open the step"))
+            if i is None:
+                return
+            sel = i
+            if i == 0:
+                ui.md_pager(f"{t['id']} · " + T("resumen", "summary"), tr.task_markdown(t, task.get("report")))
+                continue
+            if i == 1:
+                ui.md_pager(f"{t['id']} · " + T("trayectoria", "trajectory"), tr.full_markdown(t, task.get("report")))
+                continue
+            n = i - len(head)
+            while 0 <= n < len(steps):
+                k = ui.md_pager(f"{t['id']} · " + T("paso", "step") + f" {n + 1}/{len(steps)}", tr.step_markdown(steps[n], last=n == len(steps) - 1),
+                                keys=("n", "p", "N", "P"),
+                                hint=T("n/p paso siguiente/anterior", "n/p next/previous step"))
+                if k in ("n", "N"):
+                    if n + 1 < len(steps):
+                        n += 1
+                elif k in ("p", "P"):
+                    n = max(0, n - 1)
+                else:
+                    break
+            sel = n + len(head) if 0 <= n < len(steps) else sel
+
     def _run_in_terminal(self, cmd: list[str], title: str):
         """Hands the terminal to an interactive program (curses suspended) and restores the TUI afterwards."""
         import signal as _signal
@@ -2629,8 +3434,8 @@ class App:
                     pct = f"{v * 100:.0f}%"
                     ui.put(y, x, pct, ui.color(78 if v >= 0.7 else 220 if v >= 0.4 else 203, bg, True))
                     x += len(pct) + 2
-            ui.footer(T("↑↓ mover · Enter informe · e respuestas · l errores/log · r repuntuar · u reanudar · Espacio marcar · c comparar · d borrar (marcadas) · q volver",
-                        "↑↓ move · Enter report · e answers · l errors/log · r rescore · u resume · Space mark · c compare · d delete (marked) · q back"))
+            ui.footer(T("↑↓ mover · Enter informe · e respuestas · l errores/log · r repuntuar · u reanudar · Espacio marcar · c comparar · x exportar · d borrar (marcadas) · q volver",
+                        "↑↓ move · Enter report · e answers · l errors/log · r rescore · u resume · Space mark · c compare · x export · d delete (marked) · q back"))
             ui.scr.refresh()
             k = ui.key(1000)
             if k in (curses.KEY_DOWN, "j"):
@@ -2648,7 +3453,11 @@ class App:
                 else:
                     ui.message(T("Ejecución incompleta: sin informe. Pulsa u para reanudarla.", "Incomplete run: no report. Press u to resume it."), C_WARN)
             elif k in ("e", "E"):
-                self.screen_review(runs[sel]["dir"])
+                from . import trajectory
+                if trajectory.has_trajectories(runs[sel]["dir"]):
+                    self.screen_trajectories(runs[sel]["dir"])
+                else:
+                    self.screen_review(runs[sel]["dir"])
             elif k in ("l", "L"):
                 ui.md_pager(f"{T('Errores y log', 'Errors and log')} · {Path(runs[sel]['dir']).name}", engine.errors_markdown(runs[sel]["dir"]))
             elif k in ("r", "R", "u", "U"):
@@ -2666,8 +3475,11 @@ class App:
                                      f"No connection to {s.base_url}: start the model's server to resume."), C_BAD)
                         continue
                 title = T("Repuntuando", "Rescoring") if again else T("Reanudando", "Resuming")
-                res = self.live_task(f"{title} {Path(d).name}", lambda on_line, cancel: fn(d, s, on_line=on_line, cancel=cancel), progress=True)
+                res = self.live_task(f"{title} {Path(d).name}", lambda on_line, cancel: fn(d, s, on_line=on_line, cancel=cancel), progress=True,
+                                     background=True)
                 listed = 0.0
+                if res.get("background"):
+                    return
                 if res["res"] and (Path(res["res"]) / "report.md").exists():
                     ui.md_pager(f"{T('Informe', 'Report')} · {Path(res['res']).name}", (Path(res["res"]) / "report.md").read_text())
                 elif res["err"]:
@@ -2678,6 +3490,8 @@ class App:
                     ui.message(T("Marca al menos dos ejecuciones con Espacio.", "Mark at least two runs with Space."), C_WARN)
                 else:
                     ui.md_pager(T("Comparación", "Comparison"), engine.compare(dirs))
+            elif k in ("x", "X"):
+                self.export_runs(runs, sel, marked)
             elif k in ("d", "D"):
                 dirs = [r["dir"] for r in runs if r["dir"] in marked] or [runs[sel]["dir"]]   # the marked runs, else the one under the cursor
                 q = (T(f"¿Borrar {Path(dirs[0]).name}?", f"Delete {Path(dirs[0]).name}?") if len(dirs) == 1 else
@@ -2716,6 +3530,48 @@ def _utf8_locale() -> bool:
     return False
 
 
+@contextlib.contextmanager
+def _quiet_stderr():
+    """While curses owns the terminal, what anything writes to stderr (huggingface_hub's download bars, a library's
+    warning, from a background thread or a child process) goes to a log instead of over the screen. fd 2 is restored
+    before an error's traceback is printed."""
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        config.config_dir().mkdir(parents=True, exist_ok=True)
+        log = open(config.config_dir() / "tui-stderr.log", "ab", buffering=0)
+        saved = os.dup(2)
+    except OSError:
+        yield
+        return
+    sys.stderr.flush()
+    os.dup2(log.fileno(), 2)
+    try:
+        yield
+    finally:
+        try:
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        os.dup2(saved, 2)
+        os.close(saved)
+        log.close()
+
+
+def run_trajectories(folder: str, settings=None):
+    """`slmbench traj FOLDER`: the trajectory explorer on its own."""
+    global ASCII_ONLY
+    ASCII_ONLY = not _utf8_locale()
+    s = settings or config.load()
+    i18n.set_lang(s.ui_lang)
+    with _quiet_stderr():
+        curses.wrapper(lambda scr: App(scr, s).screen_trajectories(folder))
+
+
 def run_tui(settings=None):
     global ASCII_ONLY
     ASCII_ONLY = not _utf8_locale()
@@ -2726,9 +3582,11 @@ def run_tui(settings=None):
 
     def main(scr):
         app = App(scr, s)
+        app.splash()
         app.main()
         note.append(getattr(app, "exit_note", ""))
 
-    curses.wrapper(main)
+    with _quiet_stderr():
+        curses.wrapper(main)
     if note and note[0]:
         print(note[0])

@@ -5,6 +5,7 @@ Only block characters are used, which every terminal draws with the same width.
 from __future__ import annotations
 
 TAGLINE = "Where small models prove their worth."
+TAGLINE_ES = "Donde los modelos pequeños demuestran lo que valen."
 
 
 # --- logotipo: letras en minúscula de 7 píxeles de alto, pintadas con medios bloques (4 filas) ----

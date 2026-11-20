@@ -86,6 +86,30 @@ CODE = {
     },
 }
 
+AGENT = {
+    f"swebench_lite{suffix}": {
+        "name": f"SWE-bench Lite · {label}", "spec": f"swebench_lite{suffix}|0", "hf": "SWE-bench/SWE-bench_Lite:default/test", "n": 300,
+        "metric": "resolved", "builtin": False, "harness": harness, "harness_name": label, "harness_note_es": note_es,
+        "harness_note_en": note_en, "prepare": "agent", "link": "https://www.swebench.com/lite.html",
+        "requires": [],
+        "desc_es": f"Issues reales de GitHub en 12 proyectos de Python (django, sympy, pytest, requests…): el modelo, como agente con "
+                   f"{label} ({d_es}), explora el repositorio, edita el código y ejecuta comandos hasta dar con el arreglo. Resuelta = "
+                   "pasan los tests del arreglo real sin romper ninguno (harness oficial de SWE-bench). Todo dentro de un sandbox sin red.",
+        "desc_en": f"Real GitHub issues from 12 Python projects (django, sympy, pytest, requests…): the model, as an agent with {label} "
+                   f"({d_en}), explores the repository, edits the code and runs commands until it fixes the issue. Resolved = the tests "
+                   "of the real fix pass and none breaks (official SWE-bench harness). Everything inside a sandbox without network.",
+    }
+    for suffix, harness, label, d_es, d_en, note_es, note_en in (
+        ("", "mini-swe-agent", "mini-SWE-agent", "solo bash: un comando por respuesta, en texto, sin tool calls",
+         "bash only: one command per answer, as text, no tool calls", "solo bash, sin tool calls", "bash only, no tool calls"),
+        ("_pi", "pi", "Pi", "herramientas nativas read/write/edit/bash con tool calls", "native read/write/edit/bash tools via tool calls",
+         "read/write/edit/bash con tool calls", "read/write/edit/bash via tool calls"),
+        ("_opencode", "opencode", "OpenCode", "su agente build con sus herramientas (bash, read, edit, write, grep, glob…) por tool calls",
+         "its build agent with its own tools (bash, read, edit, write, grep, glob…) via tool calls",
+         "agente build, sus herramientas con tool calls", "build agent, its tools via tool calls"),
+    )
+}
+
 MODES = {
     "general": {"es": "General", "en": "General", "benchmarks": list(GENERAL) + list(EXTRA_GENERAL),
                 "desc_es": "Instrucciones, matemáticas (también en español) y salida estructurada.",
@@ -99,6 +123,9 @@ MODES = {
     "long": {"es": "Contexto largo", "en": "Long context", "benchmarks": list(LONG),
              "desc_es": "Recuperar información de contextos largos (RULER, 4k y 8k tokens).",
              "desc_en": "Retrieving information from long contexts (RULER, 4k and 8k tokens)."},
+    "agent": {"es": "Agente", "en": "Agent", "benchmarks": list(AGENT),
+              "desc_es": "El modelo como agente de programación (SWE-bench Lite con mini-SWE-agent, Pi u OpenCode), en un sandbox sin red.",
+              "desc_en": "The model as a coding agent (SWE-bench Lite with mini-SWE-agent, Pi or OpenCode), in a sandbox without network."},
 }
 
 
@@ -116,6 +143,8 @@ def catalog() -> dict[str, dict]:
         out[k] = {**v, "mode": "tools"}
     for k, v in LONG.items():
         out[k] = {**v, "mode": "long"}
+    for k, v in AGENT.items():
+        out[k] = {**v, "mode": "agent"}
     code = {**_code_catalog(), **CODE}
     order = ["humaneval_plus", "mbpp_plus", "lcb", "cruxeval_o", "cruxeval_i"]
     for k in sorted(code, key=lambda k: (order.index(k) if k in order else len(order), k)):
@@ -134,8 +163,8 @@ def effective_max_tokens(key: str, global_max: int) -> int:
 
 def mode_benchmarks(mode: str) -> list[str]:
     cat = catalog()
-    if mode == "all":
-        return list(cat)
+    if mode == "all":                       # everything but the agent mode (hours per run, its own sandbox): it runs on its own
+        return [k for k, v in cat.items() if v["mode"] != "agent"]
     return [k for k, v in cat.items() if v["mode"] == mode]
 
 
@@ -156,6 +185,10 @@ def missing_tools(key: str) -> list[str]:
     slmbench sandbox, so it needs the sandbox (and, for MultiPL-E, the compiler inside it). Empty = ready."""
     v = catalog().get(key, {})
     req = v.get("requires", [])
+    if v.get("prepare") == "agent":
+        from .. import agent
+        why = agent.status()
+        return [why] if why else []
     if v.get("prepare") == "bfcl":
         from . import bfcl_data
         return [] if bfcl_data.prepared(v["hf"].split(":", 1)[1]) else ["dataset (slmbench setup --mode tools)"]

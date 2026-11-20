@@ -88,6 +88,14 @@ def sample(key: str) -> dict:
 
 
 def _sample(key: str) -> dict:
+    if cat.catalog()[key].get("mode") == "agent":      # SWE-bench Lite: the first task of the fixed order, and its real fix
+        from .. import agent
+        try:
+            first = agent.select(1)[0]
+        except (OSError, IndexError, ValueError) as e:
+            raise RuntimeError("SWE-bench Lite not downloaded (slmbench setup --mode agent)") from e
+        return {"system": None, "prompt": f"[{first['instance_id']}]\n\n{first['problem_statement']}",
+                "reference": first.get("patch") or ""}
     cfg = task_config(key)
     row = sample_row(key)
     if row is None:
@@ -109,7 +117,10 @@ def card(key: str, sample_: bool = True, head: bool = True) -> str:
     lang = get_lang()
     L = [] if not head else [f"# {v['name']}  ·  `{key}`", "",
          f"- **{T('Modo', 'Mode')}**: {v['mode']}  ·  **{T('Métrica', 'Metric')}**: `{v['metric']}`  ·  **{T('Tareas', 'Tasks')}**: {v['n']:,}",
-         f"- **Dataset**: `{v['hf']}`  ·  **lighteval**: `{v['spec']}`" + ("" if v.get("builtin") else T(" (tarea propia de slmbench)", " (slmbench custom task)")),
+         (f"- **Dataset**: `{v['hf']}`  ·  **harness**: {v['harness']}  ·  " + T("evaluación con el harness oficial de SWE-bench",
+                                                                                "graded with the official SWE-bench harness")
+          if v.get("mode") == "agent" else
+          f"- **Dataset**: `{v['hf']}`  ·  **lighteval**: `{v['spec']}`" + ("" if v.get("builtin") else T(" (tarea propia de slmbench)", " (slmbench custom task)"))),
          f"- **{T('Referencia', 'Reference')}**: {v['link']}"]
     if head and v.get("requires"):
         miss = cat.missing_tools(key)

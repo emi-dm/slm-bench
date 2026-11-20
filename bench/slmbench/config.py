@@ -29,12 +29,13 @@ DEFAULT_OUT = _default_out()
 @dataclass
 class Settings:
     ui_lang: str = "en"                  # idioma de la TUI: en | es
+    splash: bool = True                  # pantalla de carga animada al abrir la TUI (también SLMBENCH_NO_SPLASH=1)
     # --- destino del bench ---
     base_url: str = "http://127.0.0.1:8080/v1"
     model: str = ""                      # vacío = el primero de /v1/models
     api_key: str = ""
     # --- ejecución (todo pasa por lighteval) ---
-    mode: str = "general"                # general | code | all (ver benchmarks/catalog.py)
+    mode: str = "general"                # general | code | tools | long | agent | all (ver benchmarks/catalog.py)
     benchmarks: list = field(default_factory=list)   # claves elegidas; vacío = todas las del modo
     ld_extra_tasks: str = ""             # otras tareas de lighteval, separadas por comas (p. ej. arc:easy|0)
     ld_max_samples: int = 20             # muestras por benchmark (0 = dataset completo)
@@ -48,6 +49,11 @@ class Settings:
     timeout: float = 600
     max_context: int = 32768
     extra_body: str = ""                 # JSON extra para cada petición
+    # --- modo agente (SWE-bench Lite con mini-SWE-agent / Pi) ---
+    agent_max_tokens: int = 16384        # máx. tokens por respuesta del agente (razonamiento incluido): un paso cortado no trae comando
+    agent_step_limit: int = 100          # llamadas al modelo por tarea como mucho
+    agent_timeout: int = 1800            # segundos por tarea para el agente (la evaluación va aparte)
+    agent_workers: int = 1               # tareas a la vez (máx. 3): cada una suma 4 GB de RAM al sandbox y su imagen al disco
     label: str = ""
     label_model: str = ""             # model the label was set for: a label never carries over to another model ('*' = any)
     out_dir: str = DEFAULT_OUT
@@ -65,6 +71,14 @@ class Settings:
     srv_model: str = ""                  # ruta del .gguf
     srv_hf: str = ""                     # usuario/repo[:quant]
     srv_alias: str = ""
+    srv_lora: str = ""                   # adaptador LoRA (--lora): fichero .gguf, repo de HF (org/repo[:fichero]) o URL del Hub
+    srv_lora_scale: float = 1.0          # escala del adaptador (--lora-scaled)
+    # --- Unsloth Studio como servidor (opción B): el modelo y su adaptador LoRA los carga Studio ---
+    studio_model: str = ""               # modelo GGUF de Studio (id de su /v1/models)
+    studio_variant: str = ""             # cuantización (gguf_variant); vacío = la descargada
+    studio_lora: str = ""                # adaptador LoRA, como srv_lora
+    studio_lora_scale: float = 1.0
+    studio_ctx: int = 0                  # contexto (max_seq_length); 0 = el que Studio elija según la memoria
     srv_port: int = 8080
     srv_ctx: int = 32768
     srv_ngl: str = "all"

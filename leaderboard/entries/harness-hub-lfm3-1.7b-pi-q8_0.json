@@ -1,0 +1,46 @@
+{
+ "id": "harness-hub-lfm3-1.7b-pi-q8_0",
+ "name": "harness-hub/LFM3-1.7B-pi",
+ "model_id": "harness-hub/LFM3-1.7B-pi",
+ "created": "2026-11-20",
+ "updated": "2026-11-20",
+ "meta": {
+  "params_b": 1.73,
+  "size_gb": 1.71,
+  "quant": "Q8_0",
+  "ctx_train": 262144,
+  "lora": "LFM3-1.7B-harbor-pi-lora-F16.gguf",
+  "backend": "llama.cpp b12110-cd959bae9",
+  "slots": 1,
+  "hardware": "Apple M4 Pro · 64 GB"
+ },
+ "speed": {},
+ "benchmarks": {
+  "swebench_lite_pi": {
+   "metric": "resolved",
+   "value": 0.0,
+   "stderr": null,
+   "n": 1,
+   "full": false,
+   "date": "2026-11-20",
+   "temperature": 1.0,
+   "reasoning_budget": -1,
+   "max_tokens": 8192,
+   "harness": "pi",
+   "harness_version": "1.5.2",
+   "patch_applied": 0.0,
+   "submitted": 0.0,
+   "step_limit": 50,
+   "dataset": "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+   "arch": "arm64"
+  }
+ },
+ "speed_modes": {
+  "agent": {
+   "gen_tps": 80.9,
+   "prompt_tps": 665,
+   "workers": 5,
+   "date": "2026-11-20"
+  }
+ }
+}

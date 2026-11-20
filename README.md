@@ -8,6 +8,14 @@
 </p>
 
 <p align="center">
+  <a href="docs/agent.md"><img src="https://img.shields.io/badge/agent%20mode-SWE--bench%20Lite-10b981" alt="Agent mode: SWE-bench Lite"></a>
+  <a href="https://mini-swe-agent.com"><img src="https://img.shields.io/badge/harness-mini--SWE--agent%202.4.6-3b82f6" alt="Harness: mini-SWE-agent 2.4.6"></a>
+  <a href="https://pi.dev"><img src="https://img.shields.io/badge/harness-Pi%201.5.2-ec4899" alt="Harness: Pi 1.5.2"></a>
+  <a href="https://opencode.ai"><img src="https://img.shields.io/badge/harness-OpenCode%201.19.5-ff8a3d" alt="Harness: OpenCode 1.19.5"></a>
+  <a href="docs/agent.md#where-it-runs"><img src="https://img.shields.io/badge/sandbox-no%20network-8b5cf6" alt="Sandbox without network"></a>
+</p>
+
+<p align="center">
   <img src="assets/demo.gif" alt="slmbench demo: check the model's memory with hf-mem, run the tool-calling mode with live progress, read the report, explore a failure and check the leaderboard" width="820"><br>
   <sub>A real session: LFM3-1.7B (Q8_0) on llama-server. Its memory with hf-mem, then tool calling (BFCL), the report, a failure and the leaderboard. <a href="assets/demo.mp4">Watch it as MP4</a> (sharper).</sub>
 </p>
@@ -15,21 +23,22 @@
 **slmbench** measures what **small language models** (≈ 1–14B parameters) can really do on your machine:
 
 - **Only public, established benchmarks** (IFEval, GSM8K, MATH-500, IFStruct, BFCL, RULER, HumanEval+, MBPP+, LiveCodeBench, CRUXEval, MultiPL-E…), with their official prompts and metrics, run by Hugging Face's lighteval.
-- **Four modes**: general, coding, tool calling and long context.
+- **Five modes**: general, coding, tool calling, long context and **agent**: the model as a coding agent on real GitHub issues (SWE-bench Lite), driven by **mini-SWE-agent**, **Pi** or **OpenCode**, in a sandbox without network.
 - **Your model, your server**: anything with an OpenAI-compatible API, local or hosted.
-- **A TUI** to pick the model, run, follow the progress live, read the reports and explore every failure, plus a **[leaderboard](leaderboard.md)** that updates itself after every run.
+- **A TUI** to pick the model, run, follow the progress live, read the reports and explore every failure (and every step of an agent), plus a **[leaderboard](leaderboard.md)** that updates itself after every run.
+- **Export as a dataset** (JSONL or Parquet): the task, the whole session, the model's solution and whether it's correct.
 - **Will it fit?** The memory a model needs, estimated with [hf-mem](https://github.com/alvarobartt/hf-mem) before you download it.
 
 ```text
    your model                               slmbench                          results
  +------------------+   OpenAI API   +-------------------------------+     +------------------+
  | llama-server     | <------------- | TUI / CLI                     | --> | report.md        |
- | Ollama           |    prompts     |  general | code | tools | long |     | leaderboard.md   |
+ | Ollama           |    prompts     |  general·code·tools·long·agent |     | leaderboard.md   |
  | LM Studio, vLLM  | -------------> |  lighteval (tasks, metrics)   |     | leaderboard.html |
  +------------------+    answers     +-------------------------------+     +------------------+
 ```
 
-**Contents** · [Quick start](#quick-start) · [Modes](#modes) · [The TUI](#the-tui) · [Will it fit? (hf-mem)](#will-it-fit-memory-estimates-with-hf-mem) · [Choosing the model](#choosing-the-model-to-evaluate) · [Leaderboard](#leaderboard) · [Cheat sheet](#cheat-sheet) · [Browsing pi.dev](#browsing-pidev-pi--chrome-devtools-mcp) · [Built on lighteval](#built-on-lighteval) · [Tips](#tips) · [Security](#security) · [Docs](#documentation)
+**Contents** · [Quick start](#quick-start) · [Modes](#modes) · [Agent mode](#agent-mode-swe-bench-lite) · [The TUI](#the-tui) · [Will it fit? (hf-mem)](#will-it-fit-memory-estimates-with-hf-mem) · [Choosing the model](#choosing-the-model-to-evaluate) · [Leaderboard](#leaderboard) · [Cheat sheet](#cheat-sheet) · [Browsing pi.dev](#browsing-pidev-pi--chrome-devtools-mcp) · [Built on lighteval](#built-on-lighteval) · [Tips](#tips) · [Security](#security) · [Docs](#documentation)
 
 ## Quick start
 
@@ -68,13 +77,18 @@ slmbench leaderboard                                           # ranking
 | `code` | Writing and reasoning about code in Python and five more languages, compiled and run against their tests | HumanEval+, MBPP+, LiveCodeBench, CRUXEval-O/I, MultiPL-E (JavaScript, C++, Java, Go, Rust) |
 | `tools` | Picking the right function and arguments, with the model's native `tool_calls` (as agents use it) | BFCL simple, multiple, parallel, parallel multiple |
 | `long` | Finding information hidden in long texts | RULER needle-in-a-haystack at 4k and 8k tokens |
-| `all` | Everything above | — |
+| `agent` | Working as a coding agent on real GitHub issues: explore the repo, edit, run, fix (in a sandbox without network) | SWE-bench Lite with mini-SWE-agent (bash only), Pi or OpenCode (tool calls) · [docs/agent.md](docs/agent.md) |
+| `all` | Everything above but `agent` (it runs on its own) | — |
 
 ```bash
 slmbench setup --mode code        # coding: builds the sandbox template (python, node, g++, javac, go, rustc inside it)
 slmbench run --mode code
 slmbench setup --mode tools       # BFCL: downloads the original files and prepares them
 slmbench run --benchmarks humaneval_plus,ifstruct --max-samples 50     # specific benchmarks
+slmbench setup --mode agent       # agent: the sandbox template (mini-SWE-agent, Pi, swebench) and SWE-bench Lite
+slmbench run --mode agent --max-samples 5
+slmbench traj <run>               # every step of the agent: reasoning, answer, command / tool call, output
+slmbench export --mode agent --format parquet   # runs as a dataset: task, session, solution, correct or not
 ```
 
 What you get from every run:
@@ -87,11 +101,38 @@ What you get from every run:
 
 Every benchmark, with what it measures, its dataset, metric, origin and **a real sample task** (the exact prompt the model receives), is in **[docs/benchmarks.md](docs/benchmarks.md)**, in `slmbench benchmarks <key>` and in the TUI (*3 · Benchmarks*).
 
+## Agent mode (SWE-bench Lite)
+
+The model gets a real GitHub issue and the repository at the commit before the fix, and works on it **as a coding agent**:
+it explores, runs commands, edits files and decides when it's done. Its patch is graded with the **official SWE-bench
+harness** (resolved = the tests of the real fix pass and none breaks). Pick the harness in a pop-up, or all three on the
+same tasks to compare a bash-only agent with two tool-calling ones:
+
+| Harness | How the model acts |
+|---|---|
+| [mini-SWE-agent](https://mini-swe-agent.com) | bash only: one command per answer, as text (no tool calls needed from the server) |
+| [Pi](https://pi.dev) | native tool calls: `read`, `write`, `edit`, `bash` |
+| [OpenCode](https://opencode.ai) | native tool calls: its `build` agent and its own tools (bash, read, edit, grep, glob…) |
+
+Everything runs in a Docker Sandbox **with no network at all**: the agent's commands run in the task's container, the
+model is reached through a relay that only lets chat completions through, and the task images are piped in from a
+separate sandbox. On Apple Silicon, 252 of the 300 tasks have an arm64 image (Epoch AI's builds). Every step is saved and
+can be explored in the TUI (**9 · Agent traces**), and runs can be exported as a dataset. Details: **[docs/agent.md](docs/agent.md)**.
+
+| | |
+|:-:|:-:|
+| <img src="assets/screenshots/agent-harness.png" alt="Picking the harness in a pop-up" width="420"><br>**2 · Run → Agent**: the harness in a pop-up, tasks, steps, tokens, time | <img src="assets/screenshots/agent-live.png" alt="Live view of an agent run" width="420"><br>**Live view**: every step of the agent as it happens |
+| <img src="assets/screenshots/agent-traces.png" alt="The steps of a task" width="420"><br>**9 · Agent traces**: every step of a task, with its tokens and exit code | <img src="assets/screenshots/agent-step.png" alt="One step: reasoning, tool call and output" width="420"><br>**One step**: reasoning, answer, command or tool call and its output (`n`/`p`) |
+| <img src="assets/screenshots/agent-watch.png" alt="Watching the harness live" width="420"><br>**Watch the harness live** (`w` during a run): one screen, no scrolling: the earlier steps one line each, the current one in full (`e`: whole transcript) | <img src="assets/screenshots/agent-tasks.png" alt="The same task with three harnesses" width="420"><br>**The same task, three harnesses**: resolved or not, steps and how each one ended |
+| <img src="assets/screenshots/agent-report.png" alt="Agent run report" width="420"><br>**Report**: resolved per harness, patch applied, steps, FAIL_TO_PASS | <img src="assets/screenshots/agent-export.png" alt="Export as a dataset" width="420"><br>**Export** (`x` in Results): JSONL or Parquet |
+
 ## The TUI
 
 <p align="center">
   <img src="assets/screenshots/main.png" alt="slmbench home screen: the model to evaluate with its estimated memory, and the menu" width="720">
 </p>
+
+<p align="center"><img src="assets/screenshots/splash.png" alt="The animated loading screen: the slmbench wordmark, the benchmark bars and the start-up checks" width="520"><br><sub>The loading screen at start: it connects to the model server, checks the sandboxes and loads the leaderboard (any key skips it).</sub></p>
 
 The home screen always shows **the model you're evaluating**: its parameters, quantization, server, leaderboard row, **estimated memory** and connection. The bottom-right corner shows any evaluation in progress, even one started from another terminal; click it or press `Ctrl+R` to watch it.
 
@@ -105,12 +146,15 @@ The home screen always shows **the model you're evaluating**: its parameters, qu
 <summary><b>Keys and screens</b></summary>
 
 - **1 · Model to evaluate**: a local `.gguf` (slmbench starts llama-server for you) or a running server; API key; connection test.
-- **2 · Run benchmarks**: mode and benchmarks (`?` shows a benchmark's card), samples, max tokens and the **reasoning budget**.
-- **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one.
+- **2 · Run benchmarks**: mode and benchmarks (`?` shows a benchmark's card), samples, max tokens and the **reasoning budget**. While it runs, **`m` goes back to the main menu** and the run keeps going in the background (`q`/`Esc` offer that, cancelling or staying); the menu tells you when it ends and opens its report, and quitting the TUI with runs going asks first (they're cancelled, finished results kept).
+- **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one. In an agent run, **`w` watches the harness live**, laid out to fit one screen: the earlier steps one line each (what they ran and how it went) and the current step in full (the end of its reasoning, the answer, the command or tool call and its output), updated as it happens; `e` switches to the whole transcript, `t` picks another task. `w` works on the run screen too.
 - **4 · Results**: `Enter` report, **`e` explore the answers** (benchmark → problems, failures first → prompt, answers and why each one failed; code is re-checked in the sandbox), **`l` errors and log**, **`r` rescore**, **`u` resume**, `Space` + `c` compare.
 - **7 · Chat with the model**: try a local GGUF by hand through `llama-cli`; `/exit` comes back.
 - **8 · Model memory**: see [below](#will-it-fit-memory-estimates-with-hf-mem).
+- **9 · Agent traces**: the agent-mode runs → their tasks (resolved or not, steps, cut answers) → every step: reasoning, answer, bash command or tool call with its arguments, and its output; `n`/`p` move between steps. Also `e` on an agent run in Results.
+- **4 · Results → `x`**: export the marked runs, this one, every agent run or every run as a dataset (JSONL or Parquet).
 - `L` switches between **English** and **Spanish**.
+- At start, an **animated loading screen** while slmbench connects to the model server, checks the sandboxes and loads the leaderboard (any key skips it; *6 · Settings* or `SLMBENCH_NO_SPLASH=1` turn it off).
 - Works on macOS, Linux and **WSL** (Windows Terminal). It needs a UTF-8 locale for its borders and wordmark: if `LANG` is unset (common on WSL) it switches to `C.UTF-8` by itself, and with no UTF-8 locale at all it falls back to plain ASCII. The large wordmark shows from 80×37, a smaller one from 42×31; smaller terminals just skip it.
 
 </details>
@@ -141,11 +185,29 @@ slmbench doesn't load models itself: it talks to a **server with an OpenAI-compa
 | | How |
 |---|---|
 | **Local GGUF** | TUI → *1 · Model to evaluate* → **A · Local model**: pick a `.gguf` (found in the Hugging Face cache, LM Studio…) or an `org/model:quant` repo and press *Start server* |
-| **Running server** | TUI → *1 · Model to evaluate* → **B · Connect**: llama-server `:8080`, Ollama `:11434`, LM Studio `:1234`, vLLM `:8000` or any URL |
+| **Running server** | TUI → *1 · Model to evaluate* → **B · Connect**: llama-server `:8080`, Ollama `:11434`, LM Studio `:1234`, vLLM `:8000`, **Unsloth Studio** `:8888` or any URL |
+| **Unsloth Studio** | **B · Connect** → *Unsloth Studio* (`http://127.0.0.1:8888/v1`). Studio always asks for an API key: slmbench takes it from `UNSLOTH_API_KEY` when it's set (only for Studio, never for another server, and without saving it), otherwise it asks for it and keeps it like any other key |
 | **CLI** | `slmbench models` and `slmbench use <model> --base-url <url>`; or just for one run: `slmbench run --model … --base-url …` |
 | **Hosted API** (OpenRouter, Together, Groq, OpenAI…) | **B · Connect** with the provider's URL and fill in *API key*; or `slmbench run --base-url https://openrouter.ai/api/v1 --api-key "$KEY" --model …` |
+| **Local GGUF + LoRA adapter** | **A · Local model** → *LoRA adapter*: a `.gguf` adapter, a Hugging Face repo (`org/repo[:file.gguf]`) or its URL, plus an optional *scale*. See below |
 
 Each leaderboard row is **model + quantization** (taken from llama-server or from the model id), so the same model in Q4_K_M and Q8_0 are compared side by side.
+
+### LoRA adapters
+
+Fine-tunes published as LoRA adapters, such as [harness-hub/LFM3-1.7B-opencode](https://huggingface.co/harness-hub/LFM3-1.7B-opencode) (LFM3-1.7B trained for the OpenCode harness), are measured on top of their base model: pick the base GGUF in **A · Local model** and give the adapter in *LoRA adapter*. slmbench downloads it to the Hugging Face cache and starts llama-server with `--lora` (`--lora-scaled` if the scale isn't 1), the same as:
+
+```bash
+hf download LiquidAI/LFM3-1.7B-GGUF LFM3-1.7B-Q8_0.gguf --local-dir .
+hf download harness-hub/LFM3-1.7B-opencode-GGUF LFM3-1.7B-harbor-opencode-lora-F16.gguf --local-dir .
+llama-server -m LFM3-1.7B-Q8_0.gguf --lora LFM3-1.7B-harbor-opencode-lora-F16.gguf --alias harness-hub/LFM3-1.7B-opencode
+```
+
+- **What you can give**: a local `.gguf` adapter; a repo (`harness-hub/LFM3-1.7B-opencode-GGUF`: the adapter file is found in it, the F16 one if there are several) or `org/repo:file.gguf`; or the Hub URL of the repo or the file.
+- **PEFT adapters** (`adapter_model.safetensors`, which llama.cpp can't load): slmbench uses the repo's `-GGUF` version when it exists, so the URL of `harness-hub/LFM3-1.7B-opencode` works as is. Otherwise, convert it with llama.cpp's `convert_lora_to_gguf.py` and give the resulting file.
+- **Its own row and a ranking**: the model's default alias becomes the adapter's name (`harness-hub/LFM3-1.7B-opencode`), so base and fine-tune are separate leaderboard rows; the adapter loaded (read from llama-server's `/lora-adapters`) and its base model are recorded, and the leaderboard's *Adapters* ranking shows how much each adapter adds over its base.
+- **Unsloth Studio**: connect to it (**B · Connect** → *Unsloth Studio*) and use the *Unsloth Studio* section of *1 · Model to evaluate*: pick the base GGUF among the ones Studio has, give the *LoRA adapter* (same forms as above) and the *Context* (tokens; 0 lets Studio fit it to the memory, and it may grant less than asked, which the load message says) and press *Load in Unsloth Studio*. slmbench downloads the adapter and asks Studio to load the model with it (`/v1/load` with `--lora` for its llama-server), checks that Studio applied it, and makes it the model to evaluate. Runs go to the adapter's leaderboard row (Studio names the model after its base) with the base recorded for the ranking; loading the base without an adapter really drops it (Studio would otherwise keep the previous load's). Loading the PEFT adapter itself (`is_lora`) goes through Studio's MLX backend, which can't apply LFM3 adapters yet.
+- From the CLI: `slmbench config set srv_lora harness-hub/LFM3-1.7B-opencode-GGUF` (and `srv_lora_scale`). With a server you run yourself, start it with `--lora` and connect to it (**B**): the adapter is detected and recorded the same way.
 
 <details>
 <summary><b>Hosted APIs</b>: what is sent and what to keep in mind</summary>
@@ -162,6 +224,8 @@ Every run is added automatically to **[leaderboard.md](leaderboard.md)** (with a
 - A mode's **Score** is the mean of its benchmarks. Only rows with **every benchmark of the mode measured on the full set** are ranked first and get medals; the others are listed below, marked `⚠️ k/N` (k of N benchmarks measured) or `partial` / `n=` (run with `--max-samples`, indicative only).
 - A partial run **never replaces** a full result already in the leaderboard.
 - **tok/s** is measured per mode: long-context prompts are much slower, so that table shows its own speeds.
+- **LoRA adapters**: models served with a LoRA adapter get their own ranking (in leaderboard.md, an *Adapters* tab in the HTML page and in the TUI): each adapter against its base model, with the **gain in points** per mode, measured on the benchmarks both rows share, ranked by the mean gain. The base is the GGUF the server was started with (or the adapter's `base_model` on Hugging Face): measure it too, same quant, to see the gain.
+- **Harnesses**: the agent mode also gets its own section (in leaderboard.md, a tab in the HTML page and in the TUI): a card per harness (version, how the model acts, mean resolved over the models measured with it, its best model) and the models × harnesses table with each model's best harness highlighted. The same model can resolve very different numbers of tasks depending on the agent that drives it.
 
 ## Cheat sheet
 
@@ -242,6 +306,13 @@ The coding benchmarks run code written by the model you're testing. slmbench nev
 
 Checked from inside the sandbox: model code runs as `slmrun0` with `sudo` refused and writes to `/usr`, `/etc`, the harness and other checks' folders denied; a fork bomb is contained and cleaned up; your home folder and files aren't visible, files written there don't appear on the host, HTTP requests are rejected, raw TCP connections deliver no data, UDP doesn't get out, and the only credential-looking variable the sandbox has is a placeholder (not your token), which the code doesn't even see.
 
+### Agent mode
+
+The agent's commands run in a container with no network inside a sandbox that has **no network either**: the model is
+reached through a relay over `sbx exec` that only lets chat completions through, to the model under test. The task images
+are fetched by a separate sandbox and piped in. Your API key never enters the sandbox. Details in
+[docs/agent.md](docs/agent.md#where-it-runs).
+
 ### Browsing pi.dev
 
 `slmbench browse` gives the model a real browser, so it is limited to one website: only `pi.dev` and its subdomains resolve
@@ -266,6 +337,7 @@ and never the system keyring, and Pi uses its own configuration folder (your `~/
 | [docs/adapting-a-benchmark.md](docs/adapting-a-benchmark.md) | How to adapt a Hugging Face benchmark so slmbench can run it |
 | [docs/lighteval.md](docs/lighteval.md) | How lighteval is integrated (custom model, no litellm) and version pitfalls |
 | [docs/llama-cpp.md](docs/llama-cpp.md) | Serving GGUF models with llama.cpp: getting models and an argument reference |
+| [docs/agent.md](docs/agent.md) | **Agent mode**: SWE-bench Lite with mini-SWE-agent, Pi or OpenCode, the no-network sandbox, arm64 images, trajectories |
 | [docs/browse.md](docs/browse.md) | `slmbench browse`: the model browses pi.dev with Pi + Chrome DevTools MCP (demo, or your tasks scored) |
 | [docs/omp.md](docs/omp.md) | Using local models as a coding agent with *oh my pi* |
 
