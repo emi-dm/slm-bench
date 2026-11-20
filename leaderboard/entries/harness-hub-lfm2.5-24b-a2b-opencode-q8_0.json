@@ -1,0 +1,48 @@
+{
+ "id": "harness-hub-lfm2.5-24b-a2b-opencode-q8_0",
+ "name": "harness-hub/LFM2.5-24B-A2B-opencode",
+ "model_id": "harness-hub/LFM2.5-24B-A2B-opencode",
+ "created": "2026-11-20",
+ "updated": "2026-11-20",
+ "meta": {
+  "served_id": "unsloth/LFM2.5-24B-A2B-GGUF",
+  "quant": "Q8_0",
+  "backend": "llama.cpp unsloth-studio/v0.1.920-beta",
+  "lora": "LFM2.5-24B-A2B-harbor-opencode-lora-F16.gguf",
+  "lora_path": "harness-hub/LFM2.5-24B-A2B-opencode-GGUF:LFM2.5-24B-A2B-harbor-opencode-lora-F16.gguf",
+  "lora_base": "unsloth/LFM2.5-24B-A2B",
+  "slots": 4,
+  "hardware": "Apple M4 Pro · 64 GB"
+ },
+ "speed": {},
+ "benchmarks": {
+  "swebench_lite_opencode": {
+   "metric": "resolved",
+   "value": 0.0,
+   "stderr": null,
+   "n": 1,
+   "full": false,
+   "date": "2026-11-20",
+   "temperature": 1.0,
+   "reasoning_budget": -1,
+   "max_tokens": 8192,
+   "harness": "opencode",
+   "harness_version": "1.19.5",
+   "patch_applied": 0.0,
+   "submitted": 0.0,
+   "step_limit": 50,
+   "dataset": "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+   "arch": "arm64",
+   "turns": 18.0,
+   "tokens": 193784.0
+  }
+ },
+ "speed_modes": {
+  "agent": {
+   "gen_tps": 64.3,
+   "prompt_tps": 749,
+   "workers": 5,
+   "date": "2026-11-20"
+  }
+ }
+}

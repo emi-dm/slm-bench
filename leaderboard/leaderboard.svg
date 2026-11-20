@@ -1,16 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 156" width="880" height="156" role="img" aria-label="SLM leaderboard">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 324" width="880" height="324" role="img" aria-label="SLM leaderboard">
 <style>
     .bg{fill:#ffffff}.t{fill:#1f2328;font:600 22px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
     .s{fill:#59636e;font:13px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
     .n{fill:#1f2328;font:600 15px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
     .m{fill:#59636e;font:12px -apple-system,Segoe UI,Helvetica,Arial,sans-serif}
     .v{fill:#1f2328;font:600 12px ui-monospace,Menlo,monospace}
-    .track{fill:#eaeef2}.gen{fill:#2da44e}.code{fill:#0969da}.tools{fill:#bf8700}.long{fill:#8250df}
-    @media (prefers-color-scheme: dark){.bg{fill:#0d1117}.t,.n,.v{fill:#e6edf3}.s,.m{fill:#9198a1}.track{fill:#21262d}.gen{fill:#3fb950}.code{fill:#58a6ff}.tools{fill:#d29922}.long{fill:#a371f7}}
+    .track{fill:#eaeef2}.gen{fill:#2da44e}.code{fill:#0969da}.tools{fill:#bf8700}.long{fill:#8250df}.agent{fill:#1a7f37}
+    @media (prefers-color-scheme: dark){.bg{fill:#0d1117}.t,.n,.v{fill:#e6edf3}.s,.m{fill:#9198a1}.track{fill:#21262d}.gen{fill:#3fb950}.code{fill:#58a6ff}.tools{fill:#d29922}.long{fill:#a371f7}.agent{fill:#2ea043}}
     </style>
-<rect class="bg" width="880" height="156" rx="14"/>
+<rect class="bg" width="880" height="324" rx="14"/>
 <text class="t" x="28" y="38">🏆 SLM Leaderboard</text>
 <text class="s" x="28" y="58">public benchmarks via lighteval</text>
-<rect class="gen" x="632" y="30" width="14" height="14" rx="3"/><text class="s" x="652" y="42">General</text>
-<rect class="code" x="742" y="30" width="14" height="14" rx="3"/><text class="s" x="762" y="42">Coding</text>
+<rect class="code" x="632" y="30" width="14" height="14" rx="3"/><text class="s" x="652" y="42">Coding</text>
+<rect class="agent" x="742" y="30" width="14" height="14" rx="3"/><text class="s" x="762" y="42">Agent</text>
+<text class="n" x="28" y="88">LiquidAI/LFM3-1.7B</text>
+<text class="m" x="28" y="106"></text>
+<rect class="track" x="250" y="74" width="560" height="12" rx="6"/>
+<rect class="code" x="250" y="74" width="385.3" height="12" rx="6"/>
+<text class="v" x="820" y="85">69%*</text>
+<rect class="track" x="250" y="92" width="560" height="12" rx="6"/>
+<text class="v" x="820" y="103">–</text>
+<text class="n" x="28" y="144">harness-hub/LFM2.5-24B-A2B-o</text>
+<text class="m" x="28" y="162">Q8_0</text>
+<rect class="track" x="250" y="130" width="560" height="12" rx="6"/>
+<text class="v" x="820" y="141">–</text>
+<rect class="track" x="250" y="148" width="560" height="12" rx="6"/>
+<rect class="agent" x="250" y="148" width="2.0" height="12" rx="6"/>
+<text class="v" x="820" y="159">0%*</text>
+<text class="n" x="28" y="200">harness-hub/LFM3-1.7B-pi</text>
+<text class="m" x="28" y="218">1.73B · Q8_0</text>
+<rect class="track" x="250" y="186" width="560" height="12" rx="6"/>
+<text class="v" x="820" y="197">–</text>
+<rect class="track" x="250" y="204" width="560" height="12" rx="6"/>
+<rect class="agent" x="250" y="204" width="2.0" height="12" rx="6"/>
+<text class="v" x="820" y="215">0%*</text>
+<text class="n" x="28" y="256">lfm3-harbor-opencode</text>
+<text class="m" x="28" y="274">1.73B · Q8_0</text>
+<rect class="track" x="250" y="242" width="560" height="12" rx="6"/>
+<text class="v" x="820" y="253">–</text>
+<rect class="track" x="250" y="260" width="560" height="12" rx="6"/>
+<rect class="agent" x="250" y="260" width="2.0" height="12" rx="6"/>
+<text class="v" x="820" y="271">0%*</text>
+<text class="m" x="28" y="314">* not all benchmarks of the mode measured, or a partial (n=) run: not comparable</text>
 </svg>
