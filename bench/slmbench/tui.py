@@ -473,9 +473,11 @@ class UI:
         finally:
             curses.curs_set(0)
 
-    def md_pager(self, title, md, head=None, live=None, keys=(), hint="", follow=False):
+    def md_pager(self, title, md, head=None, live=None, keys=(), hint="", follow=False, side=None):
         """Muestra Markdown formateado (tablas con bordes, títulos y porcentajes en color).
         head(width) -> lines of (text, curses attr) drawn above the Markdown (e.g. a benchmark card's header).
+        side(width) -> (lines, side_width) or None: a panel on the left that stays put while the rest scrolls (a benchmark
+        card's facts next to its sample task); taller than the screen, it scrolls only until its end shows.
         live() -> (token, busy): content that is still loading; re-rendered when the token changes, polled while busy.
         keys: extra keys that close the pager and are returned (e.g. n/p to move to the next item); hint: their help.
         follow: stay at the end while live content grows (like tail -f); scrolling up stops it, G resumes it."""
@@ -488,6 +490,7 @@ class UI:
         top = left = 0
         cache_w, lines, first, drawn = None, [], True, None
         token, busy = (live() if live else (None, False))
+        pane, sw = None, 0
         while True:
             h, w = self.size()
             if live:
@@ -495,7 +498,10 @@ class UI:
                 if tok != token:
                     token, cache_w, first = tok, None, True
             if cache_w != w:
-                lines, cache_w = (head(max(40, w - 4)) if head else []) + mdview.render(md, max(40, w - 4)), w
+                pane = side(w - 2) if side else None
+                sw = pane[1] + 3 if pane else 0           # the panel, then " │ "
+                cw_ = max(40, w - 4 - sw)
+                lines, cache_w = (head(cw_) if head else []) + mdview.render(md, cw_), w
                 if follow:
                     top = max(0, len(lines) - (h - 3))
             body = h - 3
@@ -508,11 +514,23 @@ class UI:
                 self.scr.erase()
             drawn = (top, left)
             self.header(title() if callable(title) else title)
+            if pane:
+                ptop = min(top, max(0, len(pane[0]) - body))
+                for i in range(body):
+                    x = 1
+                    for text, style in (pane[0][ptop + i] if ptop + i < len(pane[0]) else []):
+                        for ch in text:
+                            cw = mdview.dwidth(ch)
+                            if x + cw > 1 + pane[1]:
+                                break
+                            self.put(2 + i, x, ch, style if isinstance(style, int) else styles.get(style, 0))
+                            x += cw
+                    self.put(2 + i, 2 + pane[1], "│", curses.color_pair(C_DIM))
             for i in range(body):
                 idx = top + i
                 if idx >= len(lines):
                     break
-                x, col = 1, 0
+                x, col = 1 + sw, 0
                 for text, style in lines[idx]:
                     for ch in text:
                         cw = mdview.dwidth(ch)
@@ -520,7 +538,7 @@ class UI:
                             self.put(2 + i, x, ch, style if isinstance(style, int) else styles.get(style, 0))
                             x += cw
                         col += cw
-            more = max(0, len(lines) - body)
+            more = max(0, len(lines) - body, len(pane[0]) - body if pane else 0)
             self.footer((hint + " · " if hint else "") + T("↑↓ PgUp PgDn desplazar · ←→ horizontal · g/G inicio/fin · q salir",
                                                              "↑↓ PgUp PgDn scroll · ←→ horizontal · g/G top/end · q back")
                         + f"   [{min(top + 1, len(lines))}/{len(lines)}]")
@@ -2936,7 +2954,24 @@ class App:
                 return box["text"]
             return "⋯ " + T("Cargando la tarea de muestra…", "Loading the sample task…")
 
-        ui.md_pager(cat.catalog()[key]["name"], "", head=lambda w: self.card_view(key, text(), w),
+        wide = {"on": False}
+
+        def side(width):                  # wide terminal: the facts stay on the left, only the sample task scrolls
+            wide["on"] = width >= 128
+            if not wide["on"]:
+                return None
+            lw = max(52, min(66, int(width * 0.4)))
+            return self.card_head(key, lw, rule=False), lw
+
+        def body(width):
+            if wide["on"]:                    # the pane next to the facts panel (md_pager gives the width that's left)
+                hue = self.MODE_COLOR.get(cat.catalog()[key]["mode"], 209)
+                return [[], [(T("Tarea de muestra", "Sample task"), self.ui.color(hue, None, True)),
+                             (T(" · lo que recibe el modelo", " · what the model receives"), curses.color_pair(C_DIM))],
+                        [("─" * width, curses.color_pair(C_DIM))]] + mdview.render(text(), width)
+            return self.card_view(key, text(), width)
+
+        ui.md_pager(cat.catalog()[key]["name"], "", head=body, side=side,
                     live=lambda: (box["text"] is None, box["text"] is None))
 
     def card_view(self, key: str, sample_md: str, width: int) -> list:
