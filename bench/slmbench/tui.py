@@ -38,6 +38,7 @@ class Field:
     choices: list = dc_field(default_factory=list)   # [(valor, texto)]
     hint: str = ""
     secret: bool = False
+    placeholder: str = ""       # shown, muted, instead of «(empty)» when there's no value
 
 
 SELECTABLE = ("text", "int", "float", "bool", "choice", "action")
@@ -689,7 +690,7 @@ class UI:
                     self.put(y, 5 + lw + len(disp), " ›", self.color(self.MUTED, bg))
                     continue
                 if v in (None, ""):
-                    self.put(y, 3 + lw, _("(vacío)"), self.color(self.MUTED, bg) | _italic())
+                    self.put(y, 3 + lw, _(f.placeholder or "(vacío)"), self.color(self.MUTED, bg) | _italic())
                 else:
                     self.put(y, 3 + lw, "•" * min(12, len(str(v))) if f.secret else str(v), self.color(255 if cur else 252, bg, cur))
             if sel < len(fields) and fields[sel].hint:
@@ -792,6 +793,7 @@ class App:
         self._probed_at = 0.0
         self.status_gen = 0                       # +1 each time the server status is updated (screens redraw on change)
         self._prewarmed = threading.Event()
+        self.jobs: list[dict] = []                # runs left going in the background (live_task → back to the menu)
         threading.Thread(target=self._prewarm, daemon=True).start()
 
     # ---- estado del modelo a evaluar ----
@@ -833,7 +835,7 @@ class App:
                 meta = self._meta_cache[key]
             else:
                 try:
-                    meta = servers.model_meta(s.base_url, mid)
+                    meta = servers.model_meta(s.base_url, mid, api_key=s.api_key)
                     self._meta_cache[key] = meta
                 except Exception:
                     meta = {}
@@ -1032,8 +1034,8 @@ class App:
         self.refresh_status(wait=False)
         def menu_items():                          # rebuilt on every frame: «L» switches the language at once
             return [
-                ("1", T("Modelo a evaluar", "Model to evaluate"), T("Elige qué modelo se mide: un GGUF local (arranca llama-server) o un servidor ya en marcha (llama-server, Ollama, LM Studio, vLLM)",
-                                                                   "Choose the model to measure: a local GGUF (starts llama-server) or a running server (llama-server, Ollama, LM Studio, vLLM)")),
+                ("1", T("Modelo a evaluar", "Model to evaluate"), T("Elige qué modelo se mide: un GGUF local (arranca llama-server) o un servidor ya en marcha (llama-server, Ollama, LM Studio, vLLM, Unsloth Studio)",
+                                                                   "Choose the model to measure: a local GGUF (starts llama-server) or a running server (llama-server, Ollama, LM Studio, vLLM, Unsloth Studio)")),
                 ("2", T("Lanzar benchmarks", "Run benchmarks"), T("Modo general o programación; benchmarks públicos vía lighteval con progreso en vivo",
                                                                    "General or coding mode; public benchmarks via lighteval with live progress")),
                 ("3", T("Benchmarks", "Benchmarks"), T("Qué mide cada benchmark y una tarea real de muestra", "What each benchmark measures and a real sample task")),
@@ -1098,7 +1100,8 @@ class App:
                 ui.put(yy, 8, label, ui.color(255, bg, True) if cur else (curses.A_BOLD if i == 0 and not self.connected else 0))
             ui.footer(T("↑↓ mover · Enter o 1-9 elegir · L idioma (EN/ES) · r reconectar · q salir", "↑↓ move · Enter or 1-9 select · L language (EN/ES) · r reconnect · q quit"))
             ui.scr.refresh()
-            k = ui.key(250 if self._probing or self.memory_pending() else 1500)
+            self.notify_jobs()                         # a run left in the background has ended: say so here
+            k = ui.key(250 if self._probing or self.memory_pending() else 1000 if self._jobs_alive() else 1500)
             choice = None
             if k in (curses.KEY_DOWN, "j"):
                 sel = (sel + 1) % len(items)
@@ -1128,7 +1131,42 @@ class App:
                     fn()
                 self.refresh_status(wait=False)
 
+    def _jobs_alive(self) -> list[dict]:
+        return [j for j in self.jobs if not j["done"]]
+
+    def notify_jobs(self):
+        """Runs left in the background that have ended since the last look: one message each (report or error)."""
+        for j in self.jobs:
+            if j["done"] and not j.get("notified"):
+                j["notified"] = True
+                if j.get("err"):
+                    self.ui.message(f"{j['title']}\n\nError: {j['err']}", C_BAD, T("Ejecución terminada", "Run finished"))
+                elif j.get("res"):
+                    res = Path(str(j["res"]))
+                    if (res / "report.md").exists() and self.ui.confirm(
+                            T(f"✔ {j['title']}: terminada{' (cancelada)' if j.get('cancelled') else ''}.\n\n¿Ver el informe? (también en 4 · Resultados)",
+                              f"✔ {j['title']}: finished{' (cancelled)' if j.get('cancelled') else ''}.\n\nOpen the report? (also in 4 · Results)"), default=True):
+                        self.ui.md_pager(f"{T('Informe', 'Report')} · {res.name}", (res / "report.md").read_text())
+
     def quit(self):
+        alive = self._jobs_alive()
+        if alive:
+            if not self.ui.confirm(T(f"Hay {len(alive)} ejecución(es) en marcha en esta TUI. Si sales se cancelan (se guarda lo terminado "
+                                     "y se borran sus sandboxes). ¿Salir?",
+                                     f"{len(alive)} run(s) are still going in this TUI. Quitting cancels them (finished results are kept "
+                                     "and their sandboxes removed). Quit?")):
+                return False
+            ui = self.ui
+            for j in alive:
+                j["cancel"].set()
+            t0 = time.time()
+            while any(j["thread"].is_alive() for j in alive) and time.time() - t0 < 120:
+                ui.scr.erase()
+                ui.header(T("Saliendo", "Quitting"))
+                ui.put(3, 2, f"{SPIN[int(time.time() * 10) % len(SPIN)]} " + T("Cancelando las ejecuciones en marcha…", "Cancelling the running runs…"),
+                       curses.color_pair(C_WARN) | curses.A_BOLD)
+                ui.scr.refresh()
+                time.sleep(0.1)
         st = servers.managed_state()
         if st and self.ui.confirm(f"El llama-server lanzado desde aquí sigue en marcha (PID {st['pid']}). ¿Detenerlo al salir?", default=True):
             ui = self.ui
@@ -1154,8 +1192,10 @@ class App:
         ("Ollama", "http://127.0.0.1:11434/v1"),
         ("LM Studio", "http://127.0.0.1:1234/v1"),
         ("vLLM / SGLang", "http://127.0.0.1:8000/v1"),
+        ("Unsloth Studio", "http://127.0.0.1:8888/v1"),
         ("Otra URL…", ""),
     ]
+    STUDIO = "Unsloth Studio"
 
     def screen_model(self):
         ui, s = self.ui, self.s
@@ -1167,11 +1207,18 @@ class App:
                 Field("", "¿Qué modelo quieres medir?", "section"),
                 Field("", "slmbench habla con cualquier servidor con API OpenAI. Elige una de las dos formas:", "info", ""),
                 Field("local", "A · Modelo local: elegir un .gguf y arrancar llama-server", "action", "(recomendado)"),
-                Field("remote", "B · Conectar a un servidor que ya está en marcha", "action", "llama-server, Ollama, LM Studio, vLLM…"),
+                Field("remote", "B · Conectar a un servidor que ya está en marcha", "action", "llama-server, Ollama, LM Studio, vLLM, Unsloth Studio…"),
                 Field("", "Selección actual", "section"),
                 Field("", "Servidor: ", "info", s.base_url),
                 Field("api_key", "Clave de API (si el servidor la pide)", "text", s.api_key, secret=True,
-                      hint="Se guarda en ~/.config/slmbench/config.json con permisos 600."),
+                      hint=(T("Vacía: se usa UNSLOTH_API_KEY (Unsloth Studio). Una clave aquí tiene prioridad y se guarda en "
+                              "~/.config/slmbench/config.json con permisos 600.",
+                              "Empty: UNSLOTH_API_KEY is used (Unsloth Studio). A key here takes precedence and is saved in "
+                              "~/.config/slmbench/config.json with permissions 600.")
+                            if not s.api_key and os.environ.get("UNSLOTH_API_KEY") and servers.is_unsloth_studio(s.base_url) else
+                            "Se guarda en ~/.config/slmbench/config.json con permisos 600."),
+                      placeholder=("(UNSLOTH_API_KEY)" if not s.api_key and os.environ.get("UNSLOTH_API_KEY")
+                                   and servers.is_unsloth_studio(s.base_url) else "")),
                 Field("pick", "Modelo", "action", self.current_model() + ("" if s.model else "  (el primero del servidor)") if self.current_model() else "— sin conexión —"),
                 Field("label", "Etiqueta de la ejecución (opcional)", "text", s.label,
                       hint="Nombre de la carpeta de resultados y de los informes de este modelo (al cambiar de modelo deja de aplicarse). El leaderboard usa siempre el id del modelo; para comparar variantes, sírvelas con ids distintos (--alias)."),
@@ -1195,6 +1242,31 @@ class App:
                                        if self.current_model() else T("— sin conexión —", "— not connected —"))
             if st:
                 fields.insert(4, Field("", "", "info", f"llama-server lanzado desde aquí: PID {st['pid']} · puerto {st['port']} · {st['alias']}"))
+            if servers.is_unsloth_studio(s.base_url):     # Studio loads the model (and its LoRA) itself: ask it from here
+                from . import studio
+                now = studio.status(s.base_url, servers.effective_key(s.base_url, s.api_key))
+                at = next(i for i, f in enumerate(fields) if f.key == "status") + 1
+                fields[at:at] = [
+                    Field("", "Unsloth Studio", "section"),
+                    Field("", "", "info", (T("Cargado: ", "Loaded: ") + now["model"] + (f" ({now['variant']})" if now.get("variant") else "")
+                                           + (f"  +  LoRA {now['lora']}" if now.get("lora") else "")) if now.get("model")
+                          else T("Studio no tiene ningún modelo cargado.", "Studio has no model loaded.")),
+                    Field("studio_pick", T("Modelo base (GGUF de Studio)", "Base model (Studio GGUF)"), "action",
+                          s.studio_model or T("(elegir)", "(pick)"),
+                          hint=T("Los modelos que Studio tiene descargados.", "The models Studio has downloaded.")),
+                    Field("studio_variant", T("Cuantización", "Quantization"), "text", s.studio_variant,
+                          hint=T("p. ej. Q8_0. Vacío = la que Studio tenga descargada.", "e.g. Q8_0. Empty = the one Studio has downloaded."),
+                          placeholder=T("(la descargada)", "(the downloaded one)")),
+                    Field("studio_lora", T("Adaptador LoRA (opcional)", "LoRA adapter (optional)"), "text", s.studio_lora,
+                          hint=T("Un .gguf, un repo de HF (org/repo[:fichero.gguf]) o su URL; un repo PEFT usa su versión -GGUF. Se descarga "
+                                 "aquí y Studio lo carga con --lora.",
+                                 "A .gguf, a HF repo (org/repo[:file.gguf]) or its URL; a PEFT repo uses its -GGUF version. It's downloaded "
+                                 "here and Studio loads it with --lora.")),
+                    Field("studio_lora_scale", T("Escala del LoRA", "LoRA scale"), "float", s.studio_lora_scale),
+                    Field("studio_load", "▶ " + T("Cargar en Unsloth Studio", "Load in Unsloth Studio"), "action", "",
+                          hint=T("Studio carga el modelo (con el adaptador) y queda como el modelo a evaluar.",
+                                 "Studio loads the model (with the adapter) and it becomes the model to evaluate.")),
+                ]
             old_label = s.label
             kind, key = ui.form("Modelo a evaluar", fields, state, footer="↑↓ mover · Enter elegir/editar · q volver", tick=tick)
             sync(fields, s)
@@ -1205,18 +1277,60 @@ class App:
                 return
             if key == "local":
                 self.screen_server()
+            elif key == "studio_pick":
+                from . import studio
+                ms, err = self.busy("Unsloth Studio", T("Leyendo los modelos de Studio…", "Reading Studio's models…"),
+                                    lambda: studio.models(s.base_url, servers.effective_key(s.base_url, s.api_key)))
+                if err or not ms:
+                    ui.message(str(err or T("Studio no tiene modelos descargados.", "Studio has no downloaded models.")), C_BAD, "Unsloth Studio")
+                    continue
+                i = ui.menu(T("Modelo base en Unsloth Studio", "Base model in Unsloth Studio"),
+                            [(f"{m['id']:<44} {m['quant']:<12}" + (T(" ● cargado", " ● loaded") if m["loaded"] else ""), "") for m in ms],
+                            sub=T("El adaptador LoRA se elige aparte, en «Adaptador LoRA»", "The LoRA adapter is set apart, in \"LoRA adapter\""))
+                if i is not None:
+                    s.studio_model, s.studio_variant = ms[i]["id"], ms[i]["quant"]
+                    config.save(s)
+            elif key == "studio_load":
+                from . import studio
+                label = s.studio_model + (f" + LoRA {s.studio_lora.strip()}" if s.studio_lora.strip() else "")
+                res, err = self.busy("Unsloth Studio", T(f"Studio está cargando {label}…", f"Studio is loading {label}…"),
+                                     lambda: studio.load(s.base_url, servers.effective_key(s.base_url, s.api_key), s.studio_model,
+                                                         s.studio_variant, s.studio_lora, s.studio_lora_scale))
+                if err:
+                    if str(err) != T("cancelado", "cancelled"):
+                        ui.message(str(err), C_BAD, "Unsloth Studio")
+                    continue
+                s.model = res["model"]
+                config.save(s)
+                self.refresh_status(wait=True)
+                ui.message(T(f"Cargado en Unsloth Studio: {res['model']}", f"Loaded in Unsloth Studio: {res['model']}")
+                           + (f"\n+ LoRA {res['lora']}" if res["lora"] else "") + (f"\n{T('contexto', 'context')}: {res['context_length']}"
+                                                                                  if res.get("context_length") else "")
+                           + "\n\n" + T("Es el modelo a evaluar; en el leaderboard irá a la fila del adaptador.",
+                                          "It's the model to evaluate; in the leaderboard it goes to the adapter's row."), C_OK, "Unsloth Studio")
             elif key == "remote":
                 i = ui.menu("¿Qué servidor está en marcha?", [(f"{n:<26} {u}", "") for n, u in self.PRESETS],
                             sub="Arráncalo antes por tu cuenta (p. ej. `ollama serve`, LM Studio › Developer › Start server)")
                 if i is None:
                     continue
                 url = self.PRESETS[i][1]
+                studio = self.PRESETS[i][0] == self.STUDIO
                 if not url:
                     url = ui.edit("URL base (termina en /v1)", s.base_url) or ""
                 if url:
                     s.base_url = url.strip()
                     s.model = ""
                     config.save(s)
+                    if studio and not s.api_key:          # Unsloth Studio always wants a key: UNSLOTH_API_KEY, or ask for it
+                        if os.environ.get("UNSLOTH_API_KEY"):
+                            ui.toast(T("Unsloth Studio: se usa la clave de UNSLOTH_API_KEY", "Unsloth Studio: using the key in UNSLOTH_API_KEY"), C_OK)
+                        else:
+                            key_in = ui.edit(T("Clave de API de Unsloth Studio", "Unsloth Studio API key"), "", secret=True,
+                                             hint=T("Unsloth Studio pide una clave (Ajustes › API). También puedes exportar UNSLOTH_API_KEY.",
+                                                    "Unsloth Studio needs a key (Settings › API). You can also export UNSLOTH_API_KEY."))
+                            if key_in:
+                                s.api_key = key_in.strip()
+                                config.save(s)
                     self.check_server()
                     while self.needs_key:                 # the server is there but wants a key: ask for it right here
                         key_in = ui.edit(T("Clave de API", "API key"), s.api_key, secret=True,
@@ -1315,7 +1429,16 @@ class App:
                 fields.append(Field("srv_hf", "Repositorio HF", "text", s.srv_hf, hint="usuario/repo[:quant], p. ej. LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"))
             fields.append(Field("memline", T("Memoria (hf-mem): ", "Memory (hf-mem): "), "info", "…"))   # filled in by mem_tick, for the context (-c) set below
             fields += [
-                Field("srv_alias", "Alias (nombre en la API)", "text", s.srv_alias, hint="Vacío = nombre del fichero. Es el «model» que verá el bench."),
+                Field("srv_lora", T("Adaptador LoRA (opcional)", "LoRA adapter (optional)"), "text", s.srv_lora,
+                      hint=T("Un .gguf, un repo de HF (org/repo[:fichero.gguf]) o su URL, p. ej. harness-hub/LFM3-1.7B-opencode-GGUF. "
+                             "Un repo PEFT usa su versión -GGUF. Se descarga al arrancar y se pasa con --lora.",
+                             "A .gguf, a HF repo (org/repo[:file.gguf]) or its URL, e.g. harness-hub/LFM3-1.7B-opencode-GGUF. "
+                             "A PEFT repo uses its -GGUF version. Downloaded at start and passed with --lora.")),
+                Field("srv_lora_scale", T("Escala del LoRA", "LoRA scale"), "float", s.srv_lora_scale,
+                      hint=T("1 = el adaptador tal cual (--lora); otro valor: --lora-scaled.", "1 = the adapter as is (--lora); any other value: --lora-scaled.")),
+                Field("srv_alias", "Alias (nombre en la API)", "text", s.srv_alias,
+                      hint=T("Vacío = nombre del fichero, o el del adaptador LoRA si hay uno (otra fila del leaderboard). Es el «model» que verá el bench.",
+                             "Empty = the file's name, or the LoRA adapter's if there is one (another leaderboard row). It's the «model» the bench sees.")),
                 Field("", T(f"Argumentos de {binary or 'llama-server'}", f"{binary or 'llama-server'} arguments"), "section"),
                 Field("srv_port", "Puerto (--port)", "int", s.srv_port),
                 Field("srv_ctx", "Contexto total (-c)", "int", s.srv_ctx, hint="Se reparte entre los slots (-np). Para las pruebas de 16k usa ≥ 20000 por slot."),
@@ -1731,6 +1854,15 @@ class App:
 
     def start_server(self):
         ui, s = self.ui, self.s
+        if (s.srv_lora or "").strip():                 # find and download the adapter first, with a spinner
+            from . import lora
+            info, err = self.busy(T("Adaptador LoRA", "LoRA adapter"), T(f"Buscando y descargando {s.srv_lora.strip()}…",
+                                                                         f"Finding and downloading {s.srv_lora.strip()}…"),
+                                  lambda: lora.resolve(s.srv_lora))
+            if err:
+                if str(err) != T("cancelado", "cancelled"):
+                    ui.message(str(err), C_BAD, T("Adaptador LoRA", "LoRA adapter"))
+                return
         st = servers.start(s)
         t0 = time.time()
         spin = "|/-\\"
@@ -1761,8 +1893,10 @@ class App:
         ui.message(f"Servidor listo en {s.base_url}\nmodelo: {s.model}\n(ya es el destino del bench)", C_OK, "Servidor")
 
     # ---- tarea en segundo plano con log en vivo ----
-    def live_task(self, title, worker, sub="", cancel_prompt="¿Cancelar? Se detendrá el proceso.", progress=False):
-        """Ejecuta worker(on_line, cancel) en un hilo y muestra las últimas líneas. Devuelve {'err','res','cancelled','lines'}."""
+    def live_task(self, title, worker, sub="", cancel_prompt="¿Cancelar? Se detendrá el proceso.", progress=False, background=False):
+        """Ejecuta worker(on_line, cancel) en un hilo y muestra las últimas líneas. Devuelve {'err','res','cancelled','lines'}.
+        background: m (or q/Esc → «back to the menu») leaves it running and returns at once with {'background': True}; the
+        main menu tells when it ends (self.jobs)."""
         ui = self.ui
         lines: list[str] = []
         lock = threading.Lock()
@@ -1821,7 +1955,8 @@ class App:
                 agent_run = next((a for a in engine.active_runs() if a.get("agent") and a.get("started", 0) >= t0 - 5), None)
             ui.footer(T("Cualquier tecla: continuar", "Any key: continue") if st["done"] else
                       (T("w ver el agente en vivo · ", "w watch the agent live · ") if agent_run else "")
-                      + T("q/Esc: cancelar", "q/Esc: cancel"))
+                      + (T("m volver al menú (sigue en marcha) · q/Esc: opciones", "m back to the menu (keeps running) · q/Esc: options")
+                         if background else T("q/Esc: cancelar", "q/Esc: cancel")))
             ui.scr.refresh()
             k = ui.key(250)
             tick += 1
@@ -1831,6 +1966,21 @@ class App:
                 continue
             if k in ("w", "W") and agent_run:
                 self.watch_agent(agent_run["out"])
+                continue
+            if background and not st["cancelled"] and k in ("m", "M", "q", "Q", KEY_ESC):
+                choice = 0 if k in ("m", "M") else ui.choose(title, [
+                    (T("Volver al menú: la ejecución sigue en segundo plano", "Back to the menu: the run keeps going in the background"),
+                     T("Síguela con «● en marcha» del pie o Ctrl+R; el menú avisa cuando termine.",
+                       "Follow it with \"● running\" at the bottom or Ctrl+R; the menu tells you when it ends.")),
+                    (T("Cancelar la ejecución", "Cancel the run"), _(cancel_prompt)),
+                    (T("Seguir viéndola aquí", "Keep watching it here"), "")])
+                if choice == 0:
+                    st["thread"], st["cancel"], st["title"], st["background"] = th, cancel, title, True
+                    self.jobs.append(st)
+                    return st
+                if choice == 1:
+                    st["cancelled"] = True
+                    cancel.set()
                 continue
             if k in ("q", "Q", KEY_ESC) and not st["cancelled"]:
                 if ui.confirm(cancel_prompt):
@@ -1902,7 +2052,9 @@ class App:
                    + (f"  ·  {sum(tps) / len(tps):.1f} tok/s" if tps else ""))
             warn = f"{T('vacías', 'empty')}: {empty}  ·  {T('truncadas', 'truncated')}: {trunc}  ·  {T('errores API', 'API errors')}: {errs}"
             if agentic:
-                warn = (f"{T('llamadas al modelo', 'model calls')}: {len(calls)}  ·  {T('cortadas', 'cut')}: {trunc}  ·  "
+                toks = sum(int(r.get("pt") or 0) + int(r.get("ct") or 0) for r in ok)
+                from .agent import human
+                warn = (f"{T('llamadas al modelo', 'model calls')}: {len(calls)}  ·  tokens: {human(toks)}  ·  {T('cortadas', 'cut')}: {trunc}  ·  "
                         f"{T('errores API', 'API errors')}: {errs}  ·  {T('resueltas', 'resolved')}: {sum(bool(r.get('resolved')) for r in rows)}/{done}")
             ui.put(y + 5, 2, warn, curses.color_pair(C_WARN if (empty or trunc or errs) else C_DIM))
             # progreso por benchmark
@@ -1998,7 +2150,7 @@ class App:
 
     # ---- leaderboard ----
     # brightness ramp of each mode's hue (xterm 256): a benchmark value goes from a dim tint to the full hue as it grows
-    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141), 78: (65, 71, 78), 43: (30, 37, 43)}
+    LB_HEAT = {209: (137, 173, 209), 75: (67, 68, 75), 205: (132, 169, 205), 141: (97, 98, 141), 78: (65, 71, 78), 43: (30, 37, 43), 214: (130, 172, 214)}
     LB_MEDAL = (220, 252, 173)                     # gold, silver, bronze
 
     @staticmethod
@@ -2044,6 +2196,8 @@ class App:
             tabs = [t for t in tabs if t[2]]
             if lb.has_harnesses(entries):                  # the agent mode seen from the agents' side
                 tabs.append(("harness", "Harnesses", [h for h in lb.harness_table(entries) if h["models"]]))
+            if lb.has_adapters(entries):                   # LoRA adapters against their base model
+                tabs.append(("adapters", "Adapters", lb.adapter_rows(entries)))
             h, w = ui.size()
             ui.scr.erase()
             ui.header("Leaderboard")
@@ -2102,13 +2256,18 @@ class App:
             if under:
                 ui.put(3, under[0], "━" * under[1], ui.color(hue, None, True))
             desc = (cat.MODES[mode].get(f"desc_{lang}") or cat.MODES[mode].get("desc_en", "")) if mode in cat.MODES else \
+                T("Cada adaptador LoRA frente a su modelo base: ganancia en puntos sobre los benchmarks que ambos tienen medidos.",
+                  "Each LoRA adapter against its base model: gain in points on the benchmarks both have measured.") if mode == "adapters" else \
                 T("SWE-bench Lite con cada harness: el mismo modelo resuelve más o menos tareas según el agente que lo lleve.",
                   "SWE-bench Lite with each harness: the same model resolves more or fewer tasks depending on the agent that drives it.")
             right = T(f"{n_models} modelos · {len(entries)} filas", f"{n_models} models · {len(entries)} rows")
             ui.put(4, x0, desc[: max(0, W - len(right) - 3)], ui.color(250) | _italic())
             ui.put(4, x0 + W - len(right), right, ui.color(ui.MUTED))
-            if mode == "harness":
-                self._lb_harnesses(entries, rows, x0, W, h, hue)
+            if mode in ("harness", "adapters"):
+                if mode == "harness":
+                    self._lb_harnesses(entries, rows, x0, W, h, hue)
+                else:
+                    self._lb_adapters(rows, x0, W, h, hue)
                 ui.footer(T("←→ modo · o abrir HTML · s ajustes · q volver", "←→ mode · o open HTML · s settings · q back"))
                 ui.scr.refresh()
                 k = ui.key(500 if flash else 2000)
@@ -2211,7 +2370,7 @@ class App:
                 name = e["name"] if len(e["name"]) <= nw else "…" + e["name"][-(nw - 1):]
                 ui.put(y, xm, name, ui.color(255 if sc["ranked"] else 250, bg, True))
                 facts = [x for x in (lb.params_txt(m) if m.get("params_b") else "", m.get("quant", ""),
-                                     f"{m['size_gb']} GB" if m.get("size_gb") else "") if x]
+                                     f"{m['size_gb']} GB" if m.get("size_gb") else "", "LoRA" if m.get("lora") else "") if x]
                 ft = " · ".join(facts)
                 ui.put(y + 1, xm, ft[:nw], ui.color(ui.MUTED, bg))
                 if not sc["ranked"]:
@@ -2295,6 +2454,54 @@ class App:
                 self.leaderboard_settings()
                 stamp = None
 
+    def _lb_adapters(self, rows: list[dict], x0: int, W: int, h: int, hue: int) -> None:
+        """The Adapters tab: a row per model served with a LoRA adapter (2 lines: the adapter and its base model), its mean
+        gain over the base and, per mode, its score with the gain under it."""
+        ui, lb = self.ui, leaderboard
+        hd = ui.color(ui.MUTED, None, True)
+        shown = [(m, t) for m, t in lb.modes() if any(m in r["modes"] for r in rows)]
+        nw = max(24, min(40, W // 3))
+        xg = x0 + 5 + nw + 2
+        cw = max(10, min(14, (W - (xg - x0) - 10) // max(1, len(shown))))
+        xm = xg + 10
+        y = 6
+        ui.put(y, x0 + 1, "#", hd)
+        ui.put(y, x0 + 5, T("ADAPTADOR · BASE", "ADAPTER · BASE"), hd)
+        ui.put(y, xg, T("GANANCIA", "GAIN").rjust(8), hd)
+        for j, (m, t) in enumerate(shown):
+            if xm + (j + 1) * cw > x0 + W:
+                break
+            ui.put(y, xm + j * cw, t[: cw - 1].rjust(cw - 1), ui.color(self.MODE_COLOR.get(m, ui.MUTED), None, True))
+        ui.put(y + 1, x0, "─" * W, ui.color(ui.RULE))
+        y += 2
+        for i, r in enumerate(rows):
+            if y + 1 >= h - 3:
+                break
+            e, base = r["entry"], r["base"]
+            name = e["name"] if len(e["name"]) <= nw else "…" + e["name"][-(nw - 1):]
+            ui.put(y, x0 + 1, f"{i + 1:>2}", ui.color(ui.MUTED))
+            ui.put(y, x0 + 5, name, ui.color(255, None, True))
+            bt = (("↳ " + base["name"]) if base else (("↳ " + r["base_name"] + T(" (sin medir)", " (not measured)")) if r["base_name"]
+                                                   else "↳ " + T("base desconocida", "unknown base")))
+            ui.put(y + 1, x0 + 5, bt[:nw], ui.color(ui.MUTED))
+            g = r["gain"]
+            ui.put(y, xg, lb.signed(g).rjust(8), ui.color(78 if (g or 0) > 0.0005 else 203 if (g or 0) < -0.0005 else 245, None, True))
+            for j, (m, _t) in enumerate(shown):
+                cx = xm + j * cw
+                if cx + cw > x0 + W:
+                    break
+                x = r["modes"].get(m)
+                if not x:
+                    ui.put(y, cx, "–".rjust(cw - 1), ui.color(240))
+                    continue
+                ui.put(y, cx, (f"{x['score'] * 100:.1f}" + ("*" if x["partial"] else "")).rjust(cw - 1), self._lb_heat(x["score"], hue))
+                if x["delta"] is not None:
+                    d = x["delta"]
+                    ui.put(y + 1, cx, lb.signed(d).rjust(cw - 1), ui.color(78 if d > 0.0005 else 203 if d < -0.0005 else 245))
+            y += 3
+        ui.hintline(T("ganancia = puntos sobre el modelo base, en los benchmarks que ambos tienen medidos · * medido sobre una muestra",
+                      "gain = points over the base model, on the benchmarks both have measured · * measured on a sample"))
+
     def _lb_harnesses(self, entries: list[dict], hk: list[dict], x0: int, W: int, h: int, hue: int) -> None:
         """The Harnesses tab: a row per harness (version, models, mean resolved with a meter, best model, how the model acts)
         and the models × harnesses table, each model's best harness starred."""
@@ -2326,7 +2533,9 @@ class App:
             if b and b["value"]:
                 txt = f"{b['name']} {b['quant']} · {b['value'] * 100:.1f}%" + ("" if b.get("full") else f" (n={b['n']})")
                 ui.put(y, xb, txt[: max(0, x0 + W - xb)], ui.color(250))
-            ui.put(y + 1, x0 + 4, (hh.get(f"note_{lang}") or hh["note_en"])[: W - 6], ui.color(ui.MUTED) | _italic())
+            cost = (f"  ·  {lb._num(hh['turns'])} " + T("turnos", "turns") + f" · {lb._tok(hh['tokens'])} tokens "
+                    + T("por tarea", "per task")) if hh.get("turns") is not None else ""
+            ui.put(y + 1, x0 + 4, ((hh.get(f"note_{lang}") or hh["note_en"]) + cost)[: W - 6], ui.color(ui.MUTED) | _italic())
             y += 3
         rows = lb.harness_rows(entries)
         keys = [r["key"] for r in hk]
@@ -2632,8 +2841,10 @@ class App:
                 model = self.current_model()
                 prog: dict = {}
                 r = self.live_task(f"{T('Evaluando', 'Evaluating')} {model}", lambda on_line, cancel: engine.run(s, model, specs, on_line=on_line, cancel=cancel),
-                                   sub=", ".join(keys), progress=True,
+                                   sub=", ".join(keys), progress=True, background=True,
                                    cancel_prompt=T("¿Cancelar? Se guarda lo que haya terminado.", "Cancel? Finished results are kept."))
+                if r.get("background"):                  # back to the main menu while it runs
+                    return
                 if r["err"]:
                     ui.message(f"Error: {r['err']}", C_BAD)
                     continue
@@ -2749,7 +2960,7 @@ class App:
         return [fit(left[i] if i < len(left) else [], lw) + [(" ", 0), sep, (" ", 0)] + (right[i] if i < len(right) else [])
                 for i in range(rows)]
 
-    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141, "agent": 78, "harness": 43}    # the logo gradient, one hue per mode
+    MODE_COLOR = {"general": 209, "code": 75, "tools": 205, "long": 141, "agent": 78, "harness": 43, "adapters": 214}    # the logo gradient, one hue per mode
 
     def card_head(self, key: str, width: int, rule: bool = True) -> list:
         """Styled header of a benchmark card: mode badge, name, a row of fact tiles, description, links."""
@@ -3216,8 +3427,11 @@ class App:
                                      f"No connection to {s.base_url}: start the model's server to resume."), C_BAD)
                         continue
                 title = T("Repuntuando", "Rescoring") if again else T("Reanudando", "Resuming")
-                res = self.live_task(f"{title} {Path(d).name}", lambda on_line, cancel: fn(d, s, on_line=on_line, cancel=cancel), progress=True)
+                res = self.live_task(f"{title} {Path(d).name}", lambda on_line, cancel: fn(d, s, on_line=on_line, cancel=cancel), progress=True,
+                                     background=True)
                 listed = 0.0
+                if res.get("background"):
+                    return
                 if res["res"] and (Path(res["res"]) / "report.md").exists():
                     ui.md_pager(f"{T('Informe', 'Report')} · {Path(res['res']).name}", (Path(res["res"]) / "report.md").read_text())
                 elif res["err"]:

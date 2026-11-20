@@ -52,6 +52,7 @@ from pathlib import Path
 
 from . import sandbox
 from .benchmarks import catalog as cat
+from .servers import effective_key
 from .config import Settings
 from .i18n import T
 
@@ -459,6 +460,7 @@ class Relay:
         self.lock, self.slock = threading.Lock(), threading.Lock()
         self.max_tokens = None
         self.steps: dict[str, int] = {}
+        self.usage: dict[str, dict] = {}                  # per task: turns (model calls) and tokens, for tasks.jsonl
         self.errors: list[str] = []
         self.port = random.randint(20000, 60000)
         self.p = None
@@ -494,7 +496,7 @@ class Relay:
 
     def _redact(self, text: str) -> str:
         """Error messages are saved (requests.jsonl, the log, the report): never with the API key, even if echoed back."""
-        key = self.s.api_key or os.environ.get("SLMBENCH_API_KEY", "")
+        key = effective_key(self.s.base_url, self.s.api_key)
         if key:
             text = text.replace(key, "***")
         return _KEYLIKE.sub("***", text)
@@ -523,7 +525,7 @@ class Relay:
         if not body.get("max_tokens") and not body.get("max_completion_tokens"):
             body["max_tokens"] = limits(self.s)[1] if self.max_tokens is None else self.max_tokens
         headers = {"Content-Type": "application/json"}
-        key = self.s.api_key or os.environ.get("SLMBENCH_API_KEY", "")
+        key = effective_key(self.s.base_url, self.s.api_key)
         if key:
             headers["Authorization"] = f"Bearer {key}"
         t0 = time.time()
@@ -621,6 +623,10 @@ class Relay:
         key, _, iid = task.partition("~")
         with self.slock:
             self.steps[task] = n = self.steps.get(task, 0) + 1
+            u = self.usage.setdefault(task, {"turns": 0, "prompt_tokens": 0, "completion_tokens": 0})
+            u["turns"] += 1
+            u["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+            u["completion_tokens"] += int(usage.get("completion_tokens") or 0)
             with open(self.stats.parent / "answers.jsonl", "a") as f:    # every answer, also the ones a harness rejects
                 f.write(json.dumps({"key": key, "id": iid, "n": n, "finish": finish, "ct": usage.get("completion_tokens"),
                                     "content": content, "reasoning": msgd.get("reasoning_content") or msgd.get("reasoning") or "",
@@ -700,6 +706,62 @@ def _steps_of(d: Path) -> int | None:
         return None
 
 
+def human(n) -> str:
+    """412345 -> 412k, 1234567 -> 1.2M."""
+    if n is None:
+        return "-"
+    n = float(n)
+    return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e4 else f"{n / 1e3:.1f}k" if n >= 1e3 else f"{n:.0f}"
+
+
+def _median(xs: list) -> float | None:
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
+def usage_from_requests(run_dir: str | Path) -> dict:
+    """{(benchmark key, task id): {turns, prompt_tokens, completion_tokens, tokens}} rebuilt from requests.jsonl, for runs
+    whose tasks.jsonl doesn't carry them (every call there is tagged "key|task id")."""
+    out: dict = {}
+    try:
+        lines = (Path(run_dir) / "requests.jsonl").read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        key, _, iid = str(r.get("task") or "").partition("|")
+        if not iid or "error" in r:
+            continue
+        u = out.setdefault((key, iid), {"turns": 0, "prompt_tokens": 0, "completion_tokens": 0, "tokens": 0})
+        u["turns"] += 1
+        u["prompt_tokens"] += int(r.get("pt") or 0)
+        u["completion_tokens"] += int(r.get("ct") or 0)
+        u["tokens"] = u["prompt_tokens"] + u["completion_tokens"]
+    return out
+
+
+def task_stats(rows: list[dict], specs: list[str]) -> dict:
+    """Per benchmark (harness): turns (model calls) and tokens per task, median and mean, over the tasks the agent worked on
+    (an image that couldn't be fetched isn't a task the agent saw)."""
+    out = {}
+    for spec in specs:
+        rs = [r for r in rows if r["spec"] == spec and not r.get("infra_error") and r.get("turns") is not None]
+        if not rs:
+            continue
+        mean = lambda k: sum(r.get(k) or 0 for r in rs) / len(rs)      # noqa: E731
+        out[spec] = {"tasks": len(rs), "turns_median": _median([r.get("turns") for r in rs]), "turns_mean": mean("turns"),
+                     "tokens_median": _median([r.get("tokens") for r in rs]), "tokens_mean": mean("tokens"),
+                     "prompt_tokens_mean": mean("prompt_tokens"), "completion_tokens_mean": mean("completion_tokens"),
+                     "tokens_total": sum(r.get("tokens") or 0 for r in rs)}
+    return out
+
+
 def _summary(rows: list[dict], specs: list[str]) -> dict:
     out = {}
     for spec in specs:
@@ -732,7 +794,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
         model = engine.resolve_model(s, model, on_line)
         try:
             from .servers import model_meta
-            served = {k: v for k, v in model_meta(s.base_url, model, timeout=4).items() if v not in (None, "")}
+            served = {k: v for k, v in model_meta(s.base_url, model, timeout=4, api_key=s.api_key).items() if v not in (None, "")}
         except Exception:  # noqa: BLE001
             served = {}
     custom_label = s.label if s.label and getattr(s, "label_model", "") in ("*", model) else ""
@@ -885,6 +947,11 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
             rep = result.get("report") or {}
             ts = rep.get("tests_status") or {}
             f2p = ts.get("FAIL_TO_PASS") or {}
+            if regrade:
+                use = {k: prev[(spec, iid)].get(k) for k in ("turns", "prompt_tokens", "completion_tokens", "tokens")}
+            else:
+                u = dict(relay.usage.get(f"{cat.spec_to_key(spec)}~{iid}") or {"turns": 0, "prompt_tokens": 0, "completion_tokens": 0})
+                use = {**u, "tokens": u["prompt_tokens"] + u["completion_tokens"]}
             row = {"spec": spec, "harness": h, "id": iid, "repo": inst.get("repo"), "resolved": bool(result.get("resolved")),
                    "applied": bool(rep.get("patch_successfully_applied")), "patch": bool(result.get("patch")),
                    "exit_status": result.get("exit_status"), "steps": _steps_of(tdir) if not regrade else prev[(spec, iid)].get("steps"),
@@ -892,7 +959,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
                    "p2p_broken": len((ts.get("PASS_TO_PASS") or {}).get("failure") or []),
                    "agent_time": result.get("agent_time") if not regrade else prev[(spec, iid)].get("agent_time"),
                    "total_time": result.get("total_time") if not regrade else prev[(spec, iid)].get("total_time"),
-                   "grading_error": rep.get("error")}
+                   "grading_error": rep.get("error"), **use}
             with plock:
                 done_rows.append(row)
                 progress["done"] += 1
@@ -906,6 +973,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
                     + f" · {row['steps'] or '?'} " + T("pasos", "steps") + f" · {row['exit_status']}"
                     + (f" · F2P {row['f2p'][0]}/{row['f2p'][1]}" if row["f2p"][1] else "")
                     + (f" · P2P ✘{row['p2p_broken']}" if row["p2p_broken"] else "")
+                    + (f" · {row.get('turns')} " + T("turnos", "turns") + f" · {human(row.get('tokens'))} tokens" if row.get("turns") else "")
                     + f" · {int(row['total_time'] or 0)} s   [{k}/{n_all} · {res}/{nn} " + T("resueltas", "resolved") + "]")
 
         def worker():
@@ -926,7 +994,8 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
                     for _inst, spec, h in group:
                         row = {"spec": spec, "harness": h, "id": inst["instance_id"], "repo": inst.get("repo"), "resolved": False,
                                "applied": False, "patch": False, "exit_status": f"ImageError: {str(e)[:200]}", "steps": 0,
-                               "f2p": [0, 0], "p2p_broken": 0, "agent_time": 0, "total_time": 0, "infra_error": True}
+                               "f2p": [0, 0], "p2p_broken": 0, "agent_time": 0, "total_time": 0, "infra_error": True,
+                               "turns": 0, "prompt_tokens": 0, "completion_tokens": 0, "tokens": 0}
                         with plock:
                             done_rows.append(row)
                             progress["done"] += 1
@@ -980,6 +1049,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
                 pass
         log.close()
     summary = _summary(done_rows, specs)
+    agent_stats = task_stats(done_rows, specs)
     meta = {"model": model, "base_url": s.base_url, "specs": specs, "date": dt.datetime.now().isoformat(timespec="seconds"),
             "label": label, "mode": "agent", "temperature": s.temperature, "reasoning_budget": s.reasoning_budget,
             "max_new_tokens": ctx_limits[1], "context": ctx_limits[0], "step_limit": s.agent_step_limit, "task_timeout": s.agent_timeout,
@@ -991,7 +1061,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
             "returncode": 0, "cancelled": cancelled, "api_errors": len(relay.errors) if relay else 0,
             "api_error_examples": (relay.errors[:3] if relay else []), "api_notes": [],
             "server_kind": kind_srv, "kind": kind or "run", "origin": origin, "server": served or server or {},
-            "custom_label": custom_label, **engine.request_stats(stats)}
+            "custom_label": custom_label, "agent_stats": agent_stats, **engine.request_stats(stats)}
     meta["leaderboard"] = None
     if summary and not cancelled and s.leaderboard_auto:
         try:
@@ -1015,8 +1085,9 @@ def report(meta: dict, summary: dict, rows: list[dict]) -> str:
     budget = T("sin límite", "unlimited") if meta.get("reasoning_budget", -1) < 0 else f"≤ {meta['reasoning_budget']} tokens"
     hv = meta.get("harness_versions") or {}
     ds = meta.get("dataset") or {}
+    lora = (meta.get("server") or {}).get("lora")
     L = [f"# {T('Informe', 'Report')}: {meta['label']}", "",
-         f"- {T('Modelo', 'Model')}: `{meta['model']}`  ·  {T('Servidor', 'Server')}: `{meta['base_url']}`",
+         f"- {T('Modelo', 'Model')}: `{meta['model']}`" + (f" + LoRA `{lora}`" if lora else "") + f"  ·  {T('Servidor', 'Server')}: `{meta['base_url']}`",
          f"- {T('Fecha', 'Date')}: {meta['date']}  ·  harness: "
          + ", ".join(f"{c[cat.spec_to_key(sp)]['harness']} {hv.get(c[cat.spec_to_key(sp)]['harness'], '')}" for sp in meta["specs"])
          + f"  ·  {T('evaluación', 'grading')}: swebench {hv.get('swebench')}",
@@ -1050,25 +1121,34 @@ def report(meta: dict, summary: dict, rows: list[dict]) -> str:
                             f"{len(infra)} tasks with an infrastructure error (image or grading): they count as unresolved."))
     L += ["", f"## {T('Resumen', 'Summary')}", "",
           f"| Benchmark | {T('Resueltas', 'Resolved')} | ± | {T('Parche aplicado', 'Patch applied')} | "
-          f"{T('Con parche', 'With a patch')} | {T('Pasos', 'Steps')} |", "|---|---:|---:|---:|---:|---:|"]
+          f"{T('Con parche', 'With a patch')} | {T('Turnos/tarea', 'Turns/task')} | {T('Tokens/tarea', 'Tokens/task')} |",
+          "|---|---:|---:|---:|---:|---:|---:|"]
     for spec, m in summary.items():
         k = cat.spec_to_key(spec)
         rs = [r for r in rows if r["spec"] == spec]
-        steps = sorted(r["steps"] for r in rs if r.get("steps") is not None)
-        med = steps[len(steps) // 2] if steps else "-"
+        st = (meta.get("agent_stats") or {}).get(spec) or {}
+        turns = f"{st['turns_median']:g}" if st.get("turns_median") is not None else "-"
+        toks = human(st.get("tokens_median")) if st.get("tokens_median") is not None else "-"
         L.append(f"| {c[k]['name']} | {sum(r['resolved'] for r in rs)}/{len(rs)} ({pct(m['resolved']['value'])}) | "
                  f"{pct(m['resolved']['stderr']) if m['resolved'].get('stderr') is not None else '-'} | {pct(m['patch_applied']['value'])} | "
-                 f"{pct(m['submitted']['value'])} | {med} |")
+                 f"{pct(m['submitted']['value'])} | {turns} | {toks} |")
     for spec in summary:
         k = cat.spec_to_key(spec)
         rs = sorted([r for r in rows if r["spec"] == spec], key=lambda r: (not r["resolved"], r["id"]))
         L += ["", f"## {c[k]['name']} · {T('tareas', 'tasks')}", "",
-              f"| {T('Tarea', 'Task')} | {T('Resuelta', 'Resolved')} | {T('Final', 'Exit')} | {T('Pasos', 'Steps')} | FAIL_TO_PASS | "
-              f"{T('PASS_TO_PASS rotos', 'PASS_TO_PASS broken')} | {T('Tiempo', 'Time')} |", "|---|:-:|---|---:|---:|---:|---:|"]
+              f"| {T('Tarea', 'Task')} | {T('Resuelta', 'Resolved')} | {T('Final', 'Exit')} | {T('Turnos', 'Turns')} | Tokens | "
+              f"FAIL_TO_PASS | {T('P2P rotos', 'P2P broken')} | {T('Tiempo', 'Time')} |", "|---|:-:|---|---:|---:|---:|---:|---:|"]
         for r in rs:
             f2p = f"{r['f2p'][0]}/{r['f2p'][1]}" if r.get("f2p") and r["f2p"][1] else "-"
-            L.append(f"| `{r['id']}` | {'✔' if r['resolved'] else '✘'} | {pretty_status(r.get('exit_status'))[:40]} | {r.get('steps') if r.get('steps') is not None else '-'} | "
+            turns = r.get("turns") if r.get("turns") is not None else "-"
+            toks = (f"{human(r.get('tokens'))} <sub>({human(r.get('completion_tokens'))} gen.)</sub>"
+                    if r.get("tokens") is not None else "-")
+            L.append(f"| `{r['id']}` | {'✔' if r['resolved'] else '✘'} | {pretty_status(r.get('exit_status'))[:40]} | {turns} | {toks} | "
                      f"{f2p} | {r.get('p2p_broken') or 0} | {int(r.get('total_time') or 0)} s |")
+    L += ["", "> " + T("Turnos = llamadas al modelo del harness en la tarea (también las respuestas rechazadas y las compactaciones); "
+                       "tokens = de entrada + generados en todas ellas (la entrada crece cada turno: se reenvía el historial).",
+                       "Turns = the harness's model calls for the task (rejected answers and compactions included); tokens = prompt + "
+                       "generated over all of them (the prompt grows every turn: the history is sent again).")]
     L += ["", "> " + T("Cada paso del agente (razonamiento, respuesta, comando y salida): tecla `e` en Resultados o `slmbench traj <ejecución>`.",
                        "Every step of the agent (reasoning, answer, command and output): key `e` in Results or `slmbench traj <run>`."), ""]
     return "\n".join(L)

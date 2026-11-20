@@ -103,6 +103,16 @@ partial (`n=252`), and it is not directly comparable with published SWE-bench Li
 
 On x86_64 the official images (`docker.io/swebench/sweb.eval.x86_64.*`) are used and all 300 tasks are available.
 
+## Cost: turns and tokens per task
+
+Besides whether it resolves the task, what it costs: **turns** are the model calls the harness made for the task (rejected
+answers and the harness's own context compactions included) and **tokens** are the prompt + generated tokens over all of
+them. An agent sends its whole history again every turn, so the prompt tokens grow with each step and dominate the total.
+slmbench counts them in its relay, the same way for the three harnesses; the report shows the median per harness and every
+task's turns and tokens, the live view the running total, and the leaderboard's Harnesses section the mean per task for
+each harness (cheaper agents can matter as much as better ones on a small machine). Runs from before this was recorded get
+them from their `requests.jsonl`.
+
 ## What a run leaves
 
 Besides `report.md`, `summary.json`, `run.log` and `requests.jsonl` (one line per model call: tokens, speed, finish):
@@ -110,7 +120,7 @@ Besides `report.md`, `summary.json`, `run.log` and `requests.jsonl` (one line pe
 - `answers.jsonl`: every answer of the model as the relay saw it (content, reasoning, tool calls, finish), also the ones
   a harness rejects: mini-SWE-agent drops the answers it can't parse (no bash block, two blocks…) and keeps only its
   feedback, so the trajectory viewer shows them from here, where they happened.
-- `tasks.jsonl`: one line per task (resolved, exit status, steps, FAIL_TO_PASS, broken PASS_TO_PASS, times).
+- `tasks.jsonl`: one line per task (resolved, exit status, steps, **turns** and **tokens**, FAIL_TO_PASS, broken PASS_TO_PASS, times).
 - `agent/<harness>/<task>/`: the trajectory (`<task>.traj.json` for mini-SWE-agent, `<task>.pi.jsonl` with Pi's JSON
   events, `<task>.opencode.json` with OpenCode's exported session and `<task>.opencode.jsonl` with its run events),
   `patch.diff`, `preds.json`, the grading `report.json` and `test_output.txt`, and `task.log`.

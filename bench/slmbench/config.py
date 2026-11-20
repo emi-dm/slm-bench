@@ -71,6 +71,13 @@ class Settings:
     srv_model: str = ""                  # ruta del .gguf
     srv_hf: str = ""                     # usuario/repo[:quant]
     srv_alias: str = ""
+    srv_lora: str = ""                   # adaptador LoRA (--lora): fichero .gguf, repo de HF (org/repo[:fichero]) o URL del Hub
+    srv_lora_scale: float = 1.0          # escala del adaptador (--lora-scaled)
+    # --- Unsloth Studio como servidor (opción B): el modelo y su adaptador LoRA los carga Studio ---
+    studio_model: str = ""               # modelo GGUF de Studio (id de su /v1/models)
+    studio_variant: str = ""             # cuantización (gguf_variant); vacío = la descargada
+    studio_lora: str = ""                # adaptador LoRA, como srv_lora
+    studio_lora_scale: float = 1.0
     srv_port: int = 8080
     srv_ctx: int = 32768
     srv_ngl: str = "all"

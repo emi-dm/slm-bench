@@ -197,9 +197,24 @@ def record(s: Settings, meta: dict, summary: dict) -> dict | None:
         return None
     # the server's model data as read when the run started (quant, size…); older runs: ask the server now
     info = {**meta["server"], "hardware": hardware()} if meta.get("server") else model_meta(s.base_url, meta["model"])
-    eid, name, quant = entry_identity(meta["model"], info.get("quant"))
-    e = next((x for x in load_entries(s) if x["id"] == eid), None) or _new_entry(eid, name, meta["model"])
-    e["model_id"] = meta["model"]
+    if info.get("lora") and not info.get("lora_base"):    # a server started elsewhere: the adapter's base from its card
+        try:
+            from .lora import base_model, repo_of
+            repo = info.get("lora_repo") or repo_of(info.get("lora_path", ""))
+            info["lora_base"] = base_model(repo) if repo else ""
+        except Exception:  # noqa: BLE001 - offline: the ranking just can't compare it with its base
+            pass
+    row_model = meta["model"]
+    if info.get("lora") and info.get("lora_base") and _norm(entry_identity(meta["model"], None)[1]) == _norm(info["lora_base"]):
+        # the server names the model after its base (Unsloth Studio does): the row is the adapter's, not the base's
+        from .lora import repo_of
+        repo = info.get("lora_repo") or repo_of(info.get("lora_path", ""))
+        row_model = re.sub(r"(?i)[-_.]gguf$", "", repo) if repo else Path(str(info.get("lora_path") or info["lora"])).stem
+    eid, name, quant = entry_identity(row_model, info.get("quant"))
+    e = next((x for x in load_entries(s) if x["id"] == eid), None) or _new_entry(eid, name, row_model)
+    e["model_id"] = row_model                         # the row's identity (the adapter's when the server names the base)
+    if row_model != meta["model"]:
+        e["meta"]["served_id"] = meta["model"]
     e["meta"].update(info)
     if quant:
         e["meta"]["quant"] = quant
@@ -228,6 +243,9 @@ def record(s: Settings, meta: dict, summary: dict) -> dict | None:
                 "submitted": (metrics.get("submitted") or {}).get("value"),
                 "step_limit": meta.get("step_limit"), "dataset": (meta.get("dataset") or {}).get("revision"),
                 "arch": meta.get("arch")})
+            st = (meta.get("agent_stats") or {}).get(task) or {}
+            if st:                                           # cost per task: model calls and tokens
+                e["benchmarks"][key].update({"turns": st.get("turns_mean"), "tokens": st.get("tokens_mean")})
         if c.get(key, {}).get("passk"):                     # programación: pass@5 y cómo se muestreó
             p5 = metrics.get("pass@5") or {}
             e["benchmarks"][key].update({"pass5": p5.get("value"), "pass5_stderr": p5.get("stderr"),
@@ -322,7 +340,10 @@ def harness_table(entries: list[dict]) -> list[dict]:
         got = [(e, e["benchmarks"][k]) for e in entries if (e["benchmarks"].get(k) or {}).get("value") is not None]
         vals = [r["value"] for _, r in got]
         best = max(got, key=lambda x: (x[1]["value"], x[1].get("full", False)), default=None)
+        turns = [r["turns"] for _, r in got if r.get("turns") is not None]
+        toks = [r["tokens"] for _, r in got if r.get("tokens") is not None]
         out.append({"key": k, "name": c[k].get("harness_name", k), "harness": c[k].get("harness"),
+                    "turns": sum(turns) / len(turns) if turns else None, "tokens": sum(toks) / len(toks) if toks else None,
                     "note_en": c[k].get("harness_note_en", ""), "note_es": c[k].get("harness_note_es", ""),
                     "version": next((r.get("harness_version") for _, r in sorted(got, key=lambda x: x[1].get("date") or "", reverse=True)
                                      if r.get("harness_version")), ""),
@@ -346,6 +367,59 @@ def harness_rows(entries: list[dict]) -> list[dict]:
     """Models with at least one harness measured, best first (by their best harness)."""
     rows = [e for e in entries if _harness_results(e)]
     return sorted(rows, key=lambda e: (-max(v for _k, v in _harness_results(e)), e["name"].lower()))
+
+
+# ---------------------------------------------------------------------------------------------
+# LoRA adapters: each one against its base model
+# ---------------------------------------------------------------------------------------------
+def has_adapters(entries: list[dict]) -> bool:
+    return any(e["meta"].get("lora") for e in entries)
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"(?i)[-_.]gguf$", "", (name or "").strip()).lower()
+
+
+def find_base(entries: list[dict], e: dict) -> dict | None:
+    """The leaderboard row of an adapter's base model: same name (without -GGUF), no adapter, same quant if there is one."""
+    want = _norm(e["meta"].get("lora_base", ""))
+    if not want:
+        return None
+    rows = [x for x in entries if x is not e and not x["meta"].get("lora") and _norm(x["name"]) == want]
+    same = [x for x in rows if x["meta"].get("quant") == e["meta"].get("quant")]
+    return (same or rows or [None])[0]
+
+
+def adapter_rows(entries: list[dict]) -> list[dict]:
+    """One row per model served with a LoRA adapter: its score per mode and the gain over its base model, both measured
+    on the benchmarks that the two rows share (so the difference compares like with like). Ranked by the mean gain;
+    adapters whose base isn't in the leaderboard go after, by their score."""
+    out = []
+    for e in entries:
+        if not e["meta"].get("lora"):
+            continue
+        base = find_base(entries, e)
+        per = {}
+        for mode, title in modes():
+            keys = [k for k in mode_keys(mode) if (e["benchmarks"].get(k) or {}).get("value") is not None]
+            if not keys:
+                continue
+            common = [k for k in keys if base and (base["benchmarks"].get(k) or {}).get("value") is not None]
+            use = common or keys
+            score = sum(e["benchmarks"][k]["value"] for k in use) / len(use)
+            delta = (sum(e["benchmarks"][k]["value"] - base["benchmarks"][k]["value"] for k in common) / len(common)) if common else None
+            per[mode] = {"title": title, "score": score, "delta": delta, "n": len(use),
+                         "partial": any(not e["benchmarks"][k].get("full") for k in use)}
+        gains = [x["delta"] for x in per.values() if x["delta"] is not None]
+        scores = [x["score"] for x in per.values()]
+        out.append({"entry": e, "base": base, "base_name": e["meta"].get("lora_base", ""), "modes": per,
+                    "gain": sum(gains) / len(gains) if gains else None, "score": sum(scores) / len(scores) if scores else None})
+    out.sort(key=lambda r: (r["gain"] is None, -(r["gain"] if r["gain"] is not None else r["score"] or 0), r["entry"]["name"].lower()))
+    return out
+
+
+def signed(v, d=1) -> str:
+    return "–" if v is None else f"{v * 100:+.{d}f}"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -426,6 +500,8 @@ def markdown(entries: list[dict]) -> str:
               "measured (its score averages a different set, not comparable), `partial` / `n=` = run on a sample (indicative only).", ""]
     if has_harnesses(entries):
         L += _harness_markdown(entries)
+    if has_adapters(entries):
+        L += _adapter_markdown(entries)
     groups: dict[str, list] = {}
     for e in entries:
         groups.setdefault(e["name"], []).append(e)
@@ -444,8 +520,8 @@ def markdown(entries: list[dict]) -> str:
                 L.append(f"| **{name}** | {m.get('quant', '–')} | {str(m['size_gb']) + ' GB' if m.get('size_gb') else '–'} | "
                          + " | ".join(qcell(e, md) for md, _ in qm) + f" | {e['speed'].get('gen_tps') or '–'} |")
         L.append("")
-    L += ["## Run details", "", "| Model | Quant | Hardware | Backend | Size | Temp. | pass@k sampling | Reasoning budget | Max tokens | Updated |",
-          "|---|:-:|---|---|:-:|:-:|:-:|:-:|:-:|:-:|"]
+    L += ["## Run details", "", "| Model | Quant | LoRA | Hardware | Backend | Size | Temp. | pass@k sampling | Reasoning budget | Max tokens | Updated |",
+          "|---|:-:|---|---|---|:-:|:-:|:-:|:-:|:-:|:-:|"]
     for e in sorted(entries, key=lambda x: x["name"].lower()):
         m = e["meta"]
         b = e["benchmarks"].values()
@@ -455,12 +531,22 @@ def markdown(entries: list[dict]) -> str:
         pk = sorted({f"n={x['samples']}" + (f" @ T={x['sample_temperature']}" if x.get("sample_temperature") is not None else "")
                      if (x.get("samples") or 1) > 1 else "n=1"
                      for x in b if "samples" in x}) or ["–"]
-        L.append(f"| **{e['name']}** | {m.get('quant', '–')} | {m.get('hardware', '–')} | {m.get('backend', '–')} | "
+        L.append(f"| **{e['name']}** | {m.get('quant', '–')} | {m.get('lora') or '–'} | {m.get('hardware', '–')} | {m.get('backend', '–')} | "
                  f"{str(m['size_gb']) + ' GB' if m.get('size_gb') else '–'} | {'/'.join(map(str, temps))} | {', '.join(pk)} | "
                  f"{'/'.join('unlimited' if x < 0 else str(x) for x in budgets)} | {'/'.join(map(str, maxt))} | {e['updated']} |")
     L += ["", "---", "", "<sub>Generated automatically by <code>slmbench</code> after every run. Comparisons are valid between models measured on the same "
           "machine and settings; partial runs (n=…) have large error bars.</sub>", ""]
     return "\n".join(L)
+
+
+def _num(v) -> str:
+    return "–" if v is None else f"{v:.0f}" if v >= 10 else f"{v:.1f}"
+
+
+def _tok(v) -> str:
+    if v is None:
+        return "–"
+    return f"{v / 1e6:.1f}M" if v >= 1e6 else f"{v / 1e3:.0f}k" if v >= 1e4 else f"{v / 1e3:.1f}k" if v >= 1e3 else f"{v:.0f}"
 
 
 def _harness_markdown(entries: list[dict]) -> list[str]:
@@ -471,12 +557,14 @@ def _harness_markdown(entries: list[dict]) -> list[str]:
     L = ["## Harnesses", "",
          "SWE-bench Lite (resolved) with each agent harness: the same model can solve very different numbers of tasks "
          "depending on the agent that drives it.", "",
-         "| Harness | Version | How the model acts | Models | Mean resolved | Best model |", "|---|:-:|---|:-:|:--|---|"]
+         "| Harness | Version | How the model acts | Models | Mean resolved | Turns/task | Tokens/task | Best model |",
+         "|---|:-:|---|:-:|:--|--:|--:|---|"]
     for h in sorted(hk, key=lambda h: -(h["mean"] or 0)):
         b = h["best"]
-        best = (f"**{b['name']}** {b['quant']} · {pct(b['value'], 1)}" + ("" if b.get("full") else f" <sub>n={b['n']}</sub>")) if b else "–"
+        best = ((f"**{b['name']}** {b['quant']} · {pct(b['value'], 1)}" + ("" if b.get("full") else f" <sub>n={b['n']}</sub>"))
+                if b and b["value"] else "–")
         L.append(f"| **{h['name']}** | {h['version'] or '–'} | {h['note_en']} | {h['models']} | "
-                 f"{dot(h['mean'])} **{pct(h['mean'], 1)}** `{bar(h['mean'])}` | {best} |")
+                 f"{dot(h['mean'])} **{pct(h['mean'], 1)}** `{bar(h['mean'])}` | {_num(h['turns'])} | {_tok(h['tokens'])} | {best} |")
     keys = [h["key"] for h in hk]
     L += ["", "| Model | Quant | " + " | ".join(c[k].get("harness_name", k) for k in keys) + " | Best harness |",
           "|---|:-:|" + ":-:|" * len(keys) + ":-:|"]
@@ -485,9 +573,38 @@ def _harness_markdown(entries: list[dict]) -> list[str]:
         cells = [("**" + cell(e, k) + "**" if k == bk else cell(e, k)) for k in keys]
         L.append(f"| **{e['name']}** | {e['meta'].get('quant', '–')} | " + " | ".join(cells)
                  + f" | {c[bk].get('harness_name', bk) if bk else '–'} |")
-    L += ["", "> Resolved = the tests of the real fix pass and none breaks (official SWE-bench harness). **Mean resolved** "
+    L += ["", "> **Turns/task** = model calls the harness made per task; **Tokens/task** = prompt + generated tokens over them "
+          "(means over the models). Resolved = the tests of the real fix pass and none breaks (official SWE-bench harness). **Mean resolved** "
           "averages the models measured with that harness; compare harnesses on the same models and task set (`n=` = a sample "
           "of the tasks; on arm64 at most 252 of the 300 have an image).", ""]
+    return L
+
+
+def _adapter_markdown(entries: list[dict]) -> list[str]:
+    """## LoRA adapters: each fine-tune against the base model it was trained on."""
+    rows = adapter_rows(entries)
+    shown = [(m, t) for m, t in modes() if any(m in r["modes"] for r in rows)]
+    L = ["## LoRA adapters", "",
+         "Models served with a LoRA adapter, against their base model: **gain** = the adapter's score minus the base's, in "
+         "points, on the benchmarks both have measured. Ranked by the mean gain over the modes.", "",
+         "| # | Adapter | Base model | Quant | **Gain** | " + " | ".join(t for _, t in shown) + " |",
+         "|:-:|---|---|:-:|:--|" + ":-:|" * len(shown)]
+    for i, r in enumerate(rows):
+        e, base = r["entry"], r["base"]
+        bname = base["name"] if base else (f"{r['base_name']} <sub>not measured</sub>" if r["base_name"] else "–")
+        cells = []
+        for m, _t in shown:
+            x = r["modes"].get(m)
+            if not x:
+                cells.append("–")
+                continue
+            sub = " <sub>partial</sub>" if x["partial"] else ""
+            cells.append(f"{pct(x['score'], 1)} ({signed(x['delta'])})" + sub if x["delta"] is not None else pct(x["score"], 1) + sub)
+        gain = f"**{signed(r['gain'])}** pts" if r["gain"] is not None else "–"
+        L.append(f"| {i + 1} | **{e['name']}**<br><sub>{e['meta'].get('lora', '')}</sub> | {bname} | {e['meta'].get('quant', '–')} | "
+                 f"{gain} | " + " | ".join(cells) + " |")
+    L += ["", "> Cells: the adapter's score (gain over the base, in points). The base model is the GGUF the server was "
+          "started with, or the adapter's `base_model` on Hugging Face; measure it as well (same quant) to see the gain.", ""]
     return L
 
 

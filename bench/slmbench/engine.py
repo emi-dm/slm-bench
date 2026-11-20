@@ -140,9 +140,10 @@ def _expected_requests(specs: list[str], max_samples: int, passk_n: int = 1) -> 
 # Ejecución
 # ---------------------------------------------------------------------------------------------
 def model_env(s: Settings, model: str, stats: Path | None = None) -> dict:
+    from .servers import effective_key
     return {
         "SLMBENCH_LD_BASE_URL": s.base_url, "SLMBENCH_LD_MODEL": model,
-        "SLMBENCH_LD_API_KEY": s.api_key or os.environ.get("SLMBENCH_API_KEY", ""),
+        "SLMBENCH_LD_API_KEY": effective_key(s.base_url, s.api_key),
         "SLMBENCH_LD_TEMPERATURE": str(s.temperature), "SLMBENCH_LD_MAX_TOKENS": str(s.ld_max_new_tokens or 2048),
         "SLMBENCH_LD_CONCURRENCY": str(max(1, s.workers)), "SLMBENCH_LD_TIMEOUT": str(int(s.timeout)),
         "SLMBENCH_LD_MAX_CONTEXT": str(s.max_context), "SLMBENCH_LD_EXTRA_BODY": s.extra_body or "",
@@ -241,7 +242,7 @@ def run(s: Settings, model: str, specs: list[str], *, on_line=print, cancel: thr
         model = resolve_model(s, model, on_line)
         try:                                   # what is being measured, read now (the server could change during the run)
             from .servers import model_meta
-            served = {k: v for k, v in model_meta(s.base_url, model, timeout=4).items() if v not in (None, "")}
+            served = {k: v for k, v in model_meta(s.base_url, model, timeout=4, api_key=s.api_key).items() if v not in (None, "")}
         except Exception:  # noqa: BLE001
             served = {}
     custom_label = s.label if s.label and getattr(s, "label_model", "") in ("*", model) else ""
@@ -480,8 +481,9 @@ def report(meta: dict, summary: dict) -> str:
     if meta.get("server_kind") == "api" and meta.get("reasoning_budget", -1) >= 0:
         budget = T("no enviado (API externa: el presupuesto es un parámetro de llama.cpp)",
                    "not sent (hosted API: the budget is a llama.cpp parameter)")
+    lora = (meta.get("server") or {}).get("lora")
     L = [f"# {T('Informe', 'Report')}: {meta['label']}", "",
-         f"- {T('Modelo', 'Model')}: `{meta['model']}`  ·  {T('Servidor', 'Server')}: `{meta['base_url']}`",
+         f"- {T('Modelo', 'Model')}: `{meta['model']}`" + (f" + LoRA `{lora}`" if lora else "") + f"  ·  {T('Servidor', 'Server')}: `{meta['base_url']}`",
          f"- {T('Fecha', 'Date')}: {meta['date']}  ·  lighteval {meta.get('lighteval')}",
          f"- {T('Muestras por benchmark', 'Samples per benchmark')}: {meta['max_samples'] or T('todas', 'all')}  ·  "
          f"{T('temperatura', 'temperature')} {meta['temperature']}  ·  {T('máx. tokens', 'max tokens')} {meta['max_new_tokens']}"

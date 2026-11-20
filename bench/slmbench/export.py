@@ -12,7 +12,7 @@ Every mode uses the same columns, so runs of any mode can go into one file:
 | `messages` | the session, in chat format: `role` (system, user, assistant, tool), `content`, `reasoning`, `tool_calls` (JSON), `tool_call_id`, `name`, `rejected` (an answer the harness refused: no valid command) |
 | `solution` | the model's solution: the patch (`git diff`) in the agent mode, the answer otherwise |
 | `correct`, `score`, `metric` | the verdict: SWE-bench `resolved`, or the benchmark's metric for the problem (`score`). With several answers per problem (pass@k) lighteval scores the problem, not each answer: `correct` is true/false when all its answers agree (score 1 or 0) and empty when only some are right |
-| `exit_status`, `steps`, `finish`, `prompt_tokens`, `completion_tokens`, `truncated`, `seconds` | how it went |
+| `exit_status`, `steps`, `turns`, `finish`, `prompt_tokens`, `completion_tokens`, `truncated`, `seconds` | how it went: in the agent mode `turns` and the tokens are every model call of the task (rejected answers and compactions included), `steps` the ones in the trajectory |
 | `details` | JSON with the rest: tests (FAIL_TO_PASS / PASS_TO_PASS), patch applied, generation settings |
 """
 from __future__ import annotations
@@ -112,8 +112,10 @@ def agent_rows(run_dir: Path) -> list[dict]:
             "correct": bool(r.get("resolved", rep.get("resolved", False))), "score": 1.0 if r.get("resolved", rep.get("resolved")) else 0.0,
             "metric": "resolved", "exit_status": str(r.get("exit_status") or t["exit_status"]), "steps": len(t["steps"]),
             "finish": t["steps"][-1]["finish"] or "" if t["steps"] else "",
-            "prompt_tokens": sum(s["prompt_tokens"] or 0 for s in t["steps"]),
-            "completion_tokens": sum(s["completion_tokens"] or 0 for s in t["steps"]),
+            "turns": int(r.get("turns") or len(t["steps"])),
+            # the relay's count (every call of the task) when there is one, else the trajectory's
+            "prompt_tokens": int(r.get("prompt_tokens") or sum(s["prompt_tokens"] or 0 for s in t["steps"])),
+            "completion_tokens": int(r.get("completion_tokens") or sum(s["completion_tokens"] or 0 for s in t["steps"])),
             "truncated": sum(s["finish"] == "length" for s in t["steps"]), "seconds": float(r.get("agent_time") or 0),
             "details": json.dumps({"tests_status": rep.get("tests_status"), "patch_applied": rep.get("patch_successfully_applied"),
                                    "f2p": r.get("f2p"), "p2p_broken": r.get("p2p_broken"),
@@ -177,7 +179,7 @@ def lighteval_rows(run_dir: Path) -> list[dict]:
                     "solution": json.dumps([c["function"] for c in calls], ensure_ascii=False) if calls is not None else content,
                     # the metric is the problem's: with several answers (pass@k) it says which one is right only when all agree
                     "correct": True if smp["status"] == "pass" else False if smp["status"] == "fail" else None, "score": score,
-                    "metric": task["metric"] or "", "exit_status": "", "steps": 1, "finish": a.get("finish") or "",
+                    "metric": task["metric"] or "", "exit_status": "", "steps": 1, "turns": 1, "finish": a.get("finish") or "",
                     "prompt_tokens": 0, "completion_tokens": int(a.get("ct") or 0), "truncated": int(a.get("finish") == "length"),
                     "seconds": 0.0,
                     "details": json.dumps({"metrics": smp["metric"], "doc": smp["doc"],
@@ -217,7 +219,7 @@ def write(data: list[dict], path: str | Path, fmt: str) -> Path:
             ("mode", pa.string()), ("benchmark", pa.string()), ("benchmark_name", pa.string()), ("harness", pa.string()),
             ("harness_version", pa.string()), ("task_id", pa.string()), ("repo", pa.string()), ("sample", pa.int32()),
             ("task", pa.string()), ("messages", pa.list_(msg)), ("solution", pa.string()), ("correct", pa.bool_()),
-            ("score", pa.float64()), ("metric", pa.string()), ("exit_status", pa.string()), ("steps", pa.int32()),
+            ("score", pa.float64()), ("metric", pa.string()), ("exit_status", pa.string()), ("steps", pa.int32()), ("turns", pa.int32()),
             ("finish", pa.string()), ("prompt_tokens", pa.int64()), ("completion_tokens", pa.int64()), ("truncated", pa.int32()),
             ("seconds", pa.float64()), ("details", pa.string()),
         ])

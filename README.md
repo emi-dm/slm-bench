@@ -146,7 +146,7 @@ The home screen always shows **the model you're evaluating**: its parameters, qu
 <summary><b>Keys and screens</b></summary>
 
 - **1 · Model to evaluate**: a local `.gguf` (slmbench starts llama-server for you) or a running server; API key; connection test.
-- **2 · Run benchmarks**: mode and benchmarks (`?` shows a benchmark's card), samples, max tokens and the **reasoning budget**.
+- **2 · Run benchmarks**: mode and benchmarks (`?` shows a benchmark's card), samples, max tokens and the **reasoning budget**. While it runs, **`m` goes back to the main menu** and the run keeps going in the background (`q`/`Esc` offer that, cancelling or staying); the menu tells you when it ends and opens its report, and quitting the TUI with runs going asks first (they're cancelled, finished results kept).
 - **Live view** (`Ctrl+R`, or click "● running"): progress and ETA, per-benchmark progress, tokens/s, empty or truncated answers, the latest answers and lighteval's log (`l`). `←→` switches between runs, `x` cancels one. In an agent run, **`w` watches the harness live**, laid out to fit one screen: the earlier steps one line each (what they ran and how it went) and the current step in full (the end of its reasoning, the answer, the command or tool call and its output), updated as it happens; `e` switches to the whole transcript, `t` picks another task. `w` works on the run screen too.
 - **4 · Results**: `Enter` report, **`e` explore the answers** (benchmark → problems, failures first → prompt, answers and why each one failed; code is re-checked in the sandbox), **`l` errors and log**, **`r` rescore**, **`u` resume**, `Space` + `c` compare.
 - **7 · Chat with the model**: try a local GGUF by hand through `llama-cli`; `/exit` comes back.
@@ -185,11 +185,29 @@ slmbench doesn't load models itself: it talks to a **server with an OpenAI-compa
 | | How |
 |---|---|
 | **Local GGUF** | TUI → *1 · Model to evaluate* → **A · Local model**: pick a `.gguf` (found in the Hugging Face cache, LM Studio…) or an `org/model:quant` repo and press *Start server* |
-| **Running server** | TUI → *1 · Model to evaluate* → **B · Connect**: llama-server `:8080`, Ollama `:11434`, LM Studio `:1234`, vLLM `:8000` or any URL |
+| **Running server** | TUI → *1 · Model to evaluate* → **B · Connect**: llama-server `:8080`, Ollama `:11434`, LM Studio `:1234`, vLLM `:8000`, **Unsloth Studio** `:8888` or any URL |
+| **Unsloth Studio** | **B · Connect** → *Unsloth Studio* (`http://127.0.0.1:8888/v1`). Studio always asks for an API key: slmbench takes it from `UNSLOTH_API_KEY` when it's set (only for Studio, never for another server, and without saving it), otherwise it asks for it and keeps it like any other key |
 | **CLI** | `slmbench models` and `slmbench use <model> --base-url <url>`; or just for one run: `slmbench run --model … --base-url …` |
 | **Hosted API** (OpenRouter, Together, Groq, OpenAI…) | **B · Connect** with the provider's URL and fill in *API key*; or `slmbench run --base-url https://openrouter.ai/api/v1 --api-key "$KEY" --model …` |
+| **Local GGUF + LoRA adapter** | **A · Local model** → *LoRA adapter*: a `.gguf` adapter, a Hugging Face repo (`org/repo[:file.gguf]`) or its URL, plus an optional *scale*. See below |
 
 Each leaderboard row is **model + quantization** (taken from llama-server or from the model id), so the same model in Q4_K_M and Q8_0 are compared side by side.
+
+### LoRA adapters
+
+Fine-tunes published as LoRA adapters, such as [harness-hub/LFM3-1.7B-opencode](https://huggingface.co/harness-hub/LFM3-1.7B-opencode) (LFM3-1.7B trained for the OpenCode harness), are measured on top of their base model: pick the base GGUF in **A · Local model** and give the adapter in *LoRA adapter*. slmbench downloads it to the Hugging Face cache and starts llama-server with `--lora` (`--lora-scaled` if the scale isn't 1), the same as:
+
+```bash
+hf download LiquidAI/LFM3-1.7B-GGUF LFM3-1.7B-Q8_0.gguf --local-dir .
+hf download harness-hub/LFM3-1.7B-opencode-GGUF LFM3-1.7B-harbor-opencode-lora-F16.gguf --local-dir .
+llama-server -m LFM3-1.7B-Q8_0.gguf --lora LFM3-1.7B-harbor-opencode-lora-F16.gguf --alias harness-hub/LFM3-1.7B-opencode
+```
+
+- **What you can give**: a local `.gguf` adapter; a repo (`harness-hub/LFM3-1.7B-opencode-GGUF`: the adapter file is found in it, the F16 one if there are several) or `org/repo:file.gguf`; or the Hub URL of the repo or the file.
+- **PEFT adapters** (`adapter_model.safetensors`, which llama.cpp can't load): slmbench uses the repo's `-GGUF` version when it exists, so the URL of `harness-hub/LFM3-1.7B-opencode` works as is. Otherwise, convert it with llama.cpp's `convert_lora_to_gguf.py` and give the resulting file.
+- **Its own row and a ranking**: the model's default alias becomes the adapter's name (`harness-hub/LFM3-1.7B-opencode`), so base and fine-tune are separate leaderboard rows; the adapter loaded (read from llama-server's `/lora-adapters`) and its base model are recorded, and the leaderboard's *Adapters* ranking shows how much each adapter adds over its base.
+- **Unsloth Studio**: connect to it (**B · Connect** → *Unsloth Studio*) and use the *Unsloth Studio* section of *1 · Model to evaluate*: pick the base GGUF among the ones Studio has, give the *LoRA adapter* (same forms as above) and press *Load in Unsloth Studio*. slmbench downloads the adapter and asks Studio to load the model with it (`/v1/load` with `--lora` for its llama-server), checks that Studio applied it, and makes it the model to evaluate. Runs go to the adapter's leaderboard row (Studio names the model after its base) with the base recorded for the ranking; loading the base without an adapter really drops it (Studio would otherwise keep the previous load's). Loading the PEFT adapter itself (`is_lora`) goes through Studio's MLX backend, which can't apply LFM3 adapters yet.
+- From the CLI: `slmbench config set srv_lora harness-hub/LFM3-1.7B-opencode-GGUF` (and `srv_lora_scale`). With a server you run yourself, start it with `--lora` and connect to it (**B**): the adapter is detected and recorded the same way.
 
 <details>
 <summary><b>Hosted APIs</b>: what is sent and what to keep in mind</summary>
@@ -206,6 +224,7 @@ Every run is added automatically to **[leaderboard.md](leaderboard.md)** (with a
 - A mode's **Score** is the mean of its benchmarks. Only rows with **every benchmark of the mode measured on the full set** are ranked first and get medals; the others are listed below, marked `⚠️ k/N` (k of N benchmarks measured) or `partial` / `n=` (run with `--max-samples`, indicative only).
 - A partial run **never replaces** a full result already in the leaderboard.
 - **tok/s** is measured per mode: long-context prompts are much slower, so that table shows its own speeds.
+- **LoRA adapters**: models served with a LoRA adapter get their own ranking (in leaderboard.md, an *Adapters* tab in the HTML page and in the TUI): each adapter against its base model, with the **gain in points** per mode, measured on the benchmarks both rows share, ranked by the mean gain. The base is the GGUF the server was started with (or the adapter's `base_model` on Hugging Face): measure it too, same quant, to see the gain.
 - **Harnesses**: the agent mode also gets its own section (in leaderboard.md, a tab in the HTML page and in the TUI): a card per harness (version, how the model acts, mean resolved over the models measured with it, its best model) and the models × harnesses table with each model's best harness highlighted. The same model can resolve very different numbers of tasks depending on the agent that drives it.
 
 ## Cheat sheet

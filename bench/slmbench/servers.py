@@ -174,9 +174,34 @@ INSTALL_HINT = ("install llama.cpp: `brew install llama.cpp` (macOS/Linux), a re
                 "https://github.com/ggml-org/llama.cpp/releases, or build it; slmbench uses `llama-server` or `llama serve`")
 
 
+_studio_seen: dict = {}
+
+
+def is_unsloth_studio(base_url: str) -> bool:
+    """Whether the server is Unsloth Studio: its /api/health answers without a key and names the service. Asked once per URL."""
+    root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+    if root not in _studio_seen:
+        try:
+            with urllib.request.urlopen(root + "/api/health", timeout=2) as r:
+                _studio_seen[root] = "unsloth" in str(json.load(r).get("service", "")).lower()
+        except Exception:
+            _studio_seen[root] = False
+    return _studio_seen[root]
+
+
+def effective_key(base_url: str, api_key: str = "") -> str:
+    """The API key to send: the one configured, else SLMBENCH_API_KEY, else UNSLOTH_API_KEY, but that one only to a server
+    that is Unsloth Studio (it never goes to any other server)."""
+    if api_key or os.environ.get("SLMBENCH_API_KEY"):
+        return api_key or os.environ.get("SLMBENCH_API_KEY", "")
+    if os.environ.get("UNSLOTH_API_KEY") and is_unsloth_studio(base_url):
+        return os.environ["UNSLOTH_API_KEY"]
+    return ""
+
+
 def probe(base_url: str, api_key: str = "", timeout: float = 4) -> list[str]:
     """Devuelve los ids de /models; lanza excepción si no hay conexión."""
-    api_key = api_key or os.environ.get("SLMBENCH_API_KEY", "")      # the same fallback the run itself uses
+    api_key = effective_key(base_url, api_key)                         # the same fallbacks the run itself uses
     req = urllib.request.Request(base_url.rstrip("/") + "/models",
                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
     with _OPENER.open(req, timeout=timeout) as r:
@@ -203,16 +228,20 @@ def probe_error(e: Exception, base_url: str, has_key: bool) -> str:
     return T(f"No hay servidor en {base_url} ({type(e).__name__}).", f"No server at {base_url} ({type(e).__name__}).")
 
 
-def model_meta(base_url: str, model_id: str, timeout: float = 2) -> dict:
-    """Parámetros, tamaño, cuantización y versión de llama.cpp que expone llama-server (vacío con otros servidores)."""
+def model_meta(base_url: str, model_id: str, timeout: float = 2, api_key: str = "") -> dict:
+    """Parámetros, tamaño, cuantización y versión de llama.cpp que expone llama-server (vacío con otros servidores), y el
+    adaptador LoRA cargado: llama-server's /lora-adapters, or Unsloth Studio's /v1/status (its load's --lora arguments, or
+    a PEFT adapter loaded as is). api_key: for servers that ask for it even here (Unsloth Studio)."""
     import re
     root = base_url.rstrip("/")
     if root.endswith("/v1"):
         root = root[:-3]
+    key = effective_key(base_url, api_key)
 
     def get(url):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as r:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
         except Exception:
             return {}
@@ -231,6 +260,22 @@ def model_meta(base_url: str, model_id: str, timeout: float = 2) -> dict:
         out["quant"] = q
     if meta.get("n_ctx_train"):
         out["ctx_train"] = meta["n_ctx_train"]
+    if not out.get("quant") and isinstance(m.get("quant"), str) and m["quant"]:      # Unsloth Studio lists it per model
+        out["quant"] = m["quant"]
+    adapters = get(root + "/lora-adapters")             # llama-server: the LoRA adapters loaded, with their scale
+    if isinstance(adapters, list) and adapters:
+        used = [a for a in adapters if isinstance(a, dict) and a.get("scale", 1)]
+        out["lora"] = ", ".join(Path(str(a.get("path", "?"))).name + ("" if a.get("scale", 1) == 1 else f" ×{a['scale']:g}")
+                                for a in used)
+        if used:
+            out["lora_path"] = str(used[0].get("path", ""))
+        st = managed_state()                             # started from here: the base model is the GGUF it was given
+        if st and st.get("lora_base") and f":{st.get('port')}" in root:
+            out["lora_base"] = st["lora_base"]
+    if not out.get("lora"):
+        status = get(root + "/v1/status")                # Unsloth Studio: the active load and its arguments
+        if isinstance(status, dict) and ("requested_llama_extra_args" in status or status.get("is_lora")):
+            out.update(_studio_lora(status))
     props = get(root + "/props")
     if props.get("build_info"):
         out["backend"] = f"llama.cpp {props['build_info']}"
@@ -240,6 +285,30 @@ def model_meta(base_url: str, model_id: str, timeout: float = 2) -> dict:
         mq = re.search(r"(IQ\d_\w+|Q\d_[A-Z0-9_]+|BF16|F16|MXFP4)", model_id or "", re.I)
         if mq:
             out["quant"] = mq.group(1).upper()
+    return out
+
+
+def _studio_lora(status: dict) -> dict:
+    """The adapter in an Unsloth Studio load: --lora / --lora-scaled in the GGUF load's llama-server arguments (the base
+    is the active model), or a PEFT adapter loaded with is_lora (the active model is the adapter)."""
+    import re
+    out: dict = {"backend": "Unsloth Studio"}
+    active = str(status.get("active_model") or "")
+    args = [str(a) for a in status.get("requested_llama_extra_args") or []]
+    found = []
+    for i, a in enumerate(args):
+        if a in ("--lora", "--lora-scaled") and i + 1 < len(args):
+            for part in args[i + 1].split(","):
+                path, scale = (part.rsplit(":", 1) + ["1"])[:2] if a == "--lora-scaled" else (part, "1")
+                found.append((path, scale))
+    if found:
+        out["lora"] = ", ".join(Path(p).name + ("" if scale in ("1", "1.0") else f" ×{scale}") for p, scale in found)
+        out["lora_path"] = found[0][0]
+        if active:
+            out["lora_base"] = re.sub(r"(?i)[-_.]gguf$", "", active.split(":")[0])
+    elif status.get("is_lora") and active:
+        out["lora"] = active
+        out["lora_repo"] = active
     return out
 
 
@@ -269,10 +338,21 @@ def clean_model_id(model_id: str) -> str:
     return f"{repo}:{stem}" if repo else stem
 
 
+def base_alias(s: Settings) -> str:
+    """The alias the model would have without its LoRA adapter (the base model's leaderboard row)."""
+    import dataclasses
+    return default_alias(dataclasses.replace(s, srv_lora=""))
+
+
 def default_alias(s: Settings) -> str:
     """Id con el que se sirve el modelo (y fila del leaderboard junto con la quant).
     GGUF de la caché de Hugging Face -> «org/modelo» (sin -GGUF); -hf org/repo:quant -> «org/modelo»; otro fichero -> nombre del fichero."""
     import re
+    if (s.srv_lora or "").strip():                 # a model with an adapter is another model: named after the adapter
+        from .lora import name as lora_name
+        n = lora_name(s.srv_lora)
+        if n:
+            return n
     if s.srv_source == "hf":
         repo = s.srv_hf.split(":")[0]
     else:
@@ -282,7 +362,8 @@ def default_alias(s: Settings) -> str:
     return re.sub(r"(?i)[-_.]gguf$", "", repo)
 
 
-def build_command(s: Settings, binary: str | list[str]) -> list[str]:
+def build_command(s: Settings, binary: str | list[str], lora_path: str | None = None) -> list[str]:
+    """lora_path: the adapter file, already resolved (lora.resolve); without it the command shows what was asked for."""
     cmd = list(binary) if isinstance(binary, (list, tuple)) else [binary]
     if s.srv_source == "hf":
         cmd += ["-hf", s.srv_hf]
@@ -291,6 +372,9 @@ def build_command(s: Settings, binary: str | list[str]) -> list[str]:
     alias = s.srv_alias or default_alias(s)
     cmd += ["--alias", alias, "--host", "127.0.0.1", "--port", str(s.srv_port), "-c", str(s.srv_ctx),
             "-ngl", str(s.srv_ngl), "-fa", s.srv_fa, "-np", str(s.srv_parallel)]
+    if (s.srv_lora or "").strip():
+        from .lora import flags
+        cmd += flags(lora_path or s.srv_lora.strip(), s.srv_lora_scale or 1.0)
     cmd.append("--jinja" if s.srv_jinja else "--no-jinja")
     if s.srv_reasoning in ("on", "off"):
         cmd += ["--reasoning", s.srv_reasoning]
@@ -334,13 +418,18 @@ def start(s: Settings) -> dict:
         raise RuntimeError("Ya hay un servidor gestionado en marcha; páralo primero.")
     if health(s.srv_port):
         raise RuntimeError(f"El puerto {s.srv_port} ya está ocupado por otro servidor.")
-    cmd = build_command(s, binary)
+    adapter = None
+    if (s.srv_lora or "").strip():                 # downloaded to the Hugging Face cache (or the local file), then --lora
+        from . import lora
+        adapter = lora.resolve(s.srv_lora)
+    cmd = build_command(s, binary, adapter["path"] if adapter else None)
     logdir = config_dir() / "logs"
     logdir.mkdir(parents=True, exist_ok=True)
     log = logdir / f"llama-server-{s.srv_port}.log"
     with open(log, "wb") as lf:
         proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
-    st = {"pid": proc.pid, "port": s.srv_port, "alias": alias_of(cmd), "cmd": cmd, "log": str(log), "started": time.time()}
+    st = {"pid": proc.pid, "port": s.srv_port, "alias": alias_of(cmd), "cmd": cmd, "log": str(log), "started": time.time(),
+          "lora": adapter["source"] if adapter else "", "lora_base": base_alias(s) if adapter else ""}
     _state_file().parent.mkdir(parents=True, exist_ok=True)
     _state_file().write_text(json.dumps(st))
     return st

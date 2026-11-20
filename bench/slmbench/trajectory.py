@@ -450,9 +450,13 @@ def find(folder: str | Path) -> list[dict]:
         except (OSError, ValueError):
             rep = reports.get(t["id"], {})
         row = rows.get((f.parent.parent.name, t["id"]), {})
+        if row and row.get("turns") is None:          # an older run: turns and tokens from its requests.jsonl
+            u = _usage(folder).get((row.get("spec", "").split("|")[0], t["id"])) or {}
+            row = {**row, **u}
         tasks.append({
             "id": t["id"], "path": str(f), "agent": t["agent"], "steps": len(t["steps"]),
             "exit_status": pretty_status(row.get("exit_status") or t["exit_status"]),
+            "turns": row.get("turns"), "tokens": row.get("tokens"),
             "resolved": rep.get("resolved") if rep else None, "report": rep,
             "truncated": sum(s["finish"] == "length" for s in t["steps"]),
             "errors": sum(any(o["feedback"] and not o.get("user") for o in s["observations"]) or bool(s.get("error"))
@@ -473,6 +477,19 @@ def pretty_status(st: str) -> str:
             m = re.search(r'"name":\s*"([^"]+)"', st)
             return "Error: " + (m.group(1) if m else "?")
     return st
+
+
+_usage_cache: dict = {}
+
+
+def _usage(folder: Path) -> dict:
+    from .agent import usage_from_requests
+    for d in (folder, *list(folder.parents)[:3]):
+        if (d / "requests.jsonl").exists():
+            if str(d) not in _usage_cache:
+                _usage_cache[str(d)] = usage_from_requests(d)
+            return _usage_cache[str(d)]
+    return {}
 
 
 def _task_rows(folder: Path) -> dict:
@@ -718,8 +735,12 @@ def task_line(t: dict, with_agent: bool = True) -> str:
     if not t["patch"]:
         flags.append(T("sin parche", "no patch"))
     agent = f"{t.get('agent', '').split(' ')[0]:<15}" if with_agent else ""
-    return (f"{t['id']:<26} {agent}{res[t['resolved']]:<15} {t['steps']:>3} " + T("pasos", "steps") + f"  {t['exit_status'][:27]:<27} "
-            + " · ".join(flags))
+    cost = ""
+    if t.get("turns"):
+        from .agent import human
+        cost = f"{t['turns']:>3} " + T("turnos", "turns") + f" {human(t.get('tokens')):>5} tok  "
+    return (f"{t['id']:<26} {agent}{res[t['resolved']]:<15} " + (cost or f"{t['steps']:>3} " + T("pasos", "steps") + "  ")
+            + f"{t['exit_status'][:27]:<27} " + " · ".join(flags))
 
 
 def step_line(s: dict, last: bool = False) -> str:
