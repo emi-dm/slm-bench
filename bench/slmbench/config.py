@@ -78,6 +78,7 @@ class Settings:
     studio_variant: str = ""             # cuantización (gguf_variant); vacío = la descargada
     studio_lora: str = ""                # adaptador LoRA, como srv_lora
     studio_lora_scale: float = 1.0
+    studio_ctx: int = 0                  # contexto (max_seq_length); 0 = el que Studio elija según la memoria
     srv_port: int = 8080
     srv_ctx: int = 32768
     srv_ngl: str = "all"

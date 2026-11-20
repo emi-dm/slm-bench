@@ -45,16 +45,18 @@ def status(base_url: str, key: str) -> dict:
         return {}
     from .servers import _studio_lora
     info = _studio_lora(st)
-    return {"model": st.get("active_model") or "", "lora": info.get("lora", ""), "variant": st.get("gguf_variant") or ""}
+    return {"model": st.get("active_model") or "", "lora": info.get("lora", ""), "variant": st.get("gguf_variant") or "",
+            "context_length": st.get("context_length") or st.get("max_seq_length") or 0}
 
 
 def _local(base_url: str) -> bool:
     return bool(re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(/|$)", base_url))
 
 
-def load(base_url: str, key: str, model: str, variant: str = "", adapter: str = "", scale: float = 1.0) -> dict:
-    """Loads `model` (a GGUF) in Studio, with the LoRA adapter if given. Returns {model, lora, context_length}; raises
-    RuntimeError with Studio's own message when the load fails."""
+def load(base_url: str, key: str, model: str, variant: str = "", adapter: str = "", scale: float = 1.0, ctx: int = 0) -> dict:
+    """Loads `model` (a GGUF) in Studio, with the LoRA adapter if given and a context of `ctx` tokens (0: Studio sizes it
+    to the memory). Returns {model, lora, context_length}; raises RuntimeError with Studio's own message when the load
+    fails."""
     from . import lora
     if not model:
         raise RuntimeError(T("Elige el modelo base de Studio.", "Pick Studio's base model."))
@@ -62,6 +64,8 @@ def load(base_url: str, key: str, model: str, variant: str = "", adapter: str = 
     body: dict = {"model_path": model, "llama_extra_args": []}
     if variant:
         body["gguf_variant"] = variant
+    # always sent too, for the same reason: 0 lets llama.cpp size the context; Studio may fit a larger one to the memory
+    body["max_seq_length"], body["max_seq_length_auto_derived"] = max(0, int(ctx or 0)), False
     source, want = "", ""
     if (adapter or "").strip():
         if not _local(base_url):
@@ -73,8 +77,9 @@ def load(base_url: str, key: str, model: str, variant: str = "", adapter: str = 
         body["llama_extra_args"] = lora.flags(info["path"], scale or 1.0)
         source, want = info["source"], info["path"].rsplit("/", 1)[-1]
     cur = status(base_url, key)
-    if cur.get("model") == model and (cur.get("lora") or "").split(" ×")[0] != want:
-        body["force_reload"] = True                    # same model, another adapter (or none): a fresh llama-server
+    if cur.get("model") == model and ((cur.get("lora") or "").split(" ×")[0] != want
+                                       or (ctx and cur.get("context_length") and cur["context_length"] != ctx)):
+        body["force_reload"] = True                    # same model, another adapter (or none) or context: a fresh llama-server
     try:
         r = _call(base_url, key, "/v1/load", body, timeout=1800)
     except urllib.error.HTTPError as e:
@@ -93,5 +98,6 @@ def load(base_url: str, key: str, model: str, variant: str = "", adapter: str = 
         raise RuntimeError(T(f"Studio cargó {now.get('model') or model} con el adaptador «{got or 'ninguno'}» en vez de "
                              f"«{want or 'ninguno'}».", f"Studio loaded {now.get('model') or model} with adapter '{got or 'none'}' "
                              f"instead of '{want or 'none'}'."))
-    return {"model": r.get("model") or model, "lora": source, "context_length": r.get("context_length"),
+    return {"model": r.get("model") or model, "lora": source,
+            "context_length": r.get("context_length") or now.get("context_length") or None, "asked_ctx": int(ctx or 0),
             "extra": r.get("requested_llama_extra_args") or []}

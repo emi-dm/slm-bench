@@ -1251,6 +1251,7 @@ class App:
                 fields[at:at] = [
                     Field("", "Unsloth Studio", "section"),
                     Field("", "", "info", (T("Cargado: ", "Loaded: ") + now["model"] + (f" ({now['variant']})" if now.get("variant") else "")
+                                           + (f" · ctx {now['context_length']}" if now.get("context_length") else "")
                                            + (f"  +  LoRA {now['lora']}" if now.get("lora") else "")) if now.get("model")
                           else T("Studio no tiene ningún modelo cargado.", "Studio has no model loaded.")),
                     Field("studio_pick", T("Modelo base (GGUF de Studio)", "Base model (Studio GGUF)"), "action",
@@ -1265,6 +1266,11 @@ class App:
                                  "A .gguf, a HF repo (org/repo[:file.gguf]) or its URL; a PEFT repo uses its -GGUF version. It's downloaded "
                                  "here and Studio loads it with --lora.")),
                     Field("studio_lora_scale", T("Escala del LoRA", "LoRA scale"), "float", s.studio_lora_scale),
+                    Field("studio_ctx", T("Contexto (tokens)", "Context (tokens)"), "int", s.studio_ctx,
+                          hint=T("p. ej. 32768 o 65536 para el modo agente. 0 = el que Studio elija según la memoria. Studio puede "
+                                 "dar menos si no cabe.",
+                                 "e.g. 32768, or 65536 for agent mode. 0 = the one Studio picks for the memory. Studio may give less "
+                                 "if it doesn't fit.")),
                     Field("studio_load", "▶ " + T("Cargar en Unsloth Studio", "Load in Unsloth Studio"), "action", "",
                           hint=T("Studio carga el modelo (con el adaptador) y queda como el modelo a evaluar.",
                                  "Studio loads the model (with the adapter) and it becomes the model to evaluate.")),
@@ -1297,7 +1303,7 @@ class App:
                 label = s.studio_model + (f" + LoRA {s.studio_lora.strip()}" if s.studio_lora.strip() else "")
                 res, err = self.busy("Unsloth Studio", T(f"Studio está cargando {label}…", f"Studio is loading {label}…"),
                                      lambda: studio.load(s.base_url, servers.effective_key(s.base_url, s.api_key), s.studio_model,
-                                                         s.studio_variant, s.studio_lora, s.studio_lora_scale))
+                                                         s.studio_variant, s.studio_lora, s.studio_lora_scale, s.studio_ctx))
                 if err:
                     if str(err) != T("cancelado", "cancelled"):
                         ui.message(str(err), C_BAD, "Unsloth Studio")
@@ -1308,6 +1314,9 @@ class App:
                 ui.message(T(f"Cargado en Unsloth Studio: {res['model']}", f"Loaded in Unsloth Studio: {res['model']}")
                            + (f"\n+ LoRA {res['lora']}" if res["lora"] else "") + (f"\n{T('contexto', 'context')}: {res['context_length']}"
                                                                                   if res.get("context_length") else "")
+                           + (T(f" (pediste {res['asked_ctx']}: Studio lo ajustó a la memoria)", f" (you asked for {res['asked_ctx']}: Studio "
+                                "fitted it to the memory)") if res.get("asked_ctx") and res.get("context_length")
+                              and res["context_length"] != res["asked_ctx"] else "")
                            + "\n\n" + T("Es el modelo a evaluar; en el leaderboard irá a la fila del adaptador.",
                                           "It's the model to evaluate; in the leaderboard it goes to the adapter's row."), C_OK, "Unsloth Studio")
             elif key == "remote":
