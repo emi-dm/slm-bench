@@ -252,12 +252,15 @@ def record(s: Settings, meta: dict, summary: dict) -> dict | None:
                                          "samples": meta.get("passk_n", 1)})
     # speed: per mode (a long-context prompt is much slower to generate after); the headline tok/s excludes long context.
     # With fewer parallel requests each one is faster, so the lowest worker count measured wins.
-    def better(old):
-        return not old or old.get("workers") is None or s.workers <= old["workers"]
+    def workers(md=""):                                   # the agent mode runs agent_workers tasks at once, not `workers`
+        return int(s.agent_workers or 1) if md == "agent" else s.workers
+
+    def better(old, md=""):
+        return not old or old.get("workers") is None or workers(md) <= old["workers"]
     by_mode = meta.get("speed_by_mode") or {}
     for md, sp in by_mode.items():
-        if sp.get("gen_tps") and better(e.setdefault("speed_modes", {}).get(md)):
-            e["speed_modes"][md] = {**sp, "workers": s.workers, "date": meta["date"][:10]}
+        if sp.get("gen_tps") and better(e.setdefault("speed_modes", {}).get(md), md):
+            e["speed_modes"][md] = {**sp, "workers": workers(md), "date": meta["date"][:10]}
     if by_mode:
         gen = next((by_mode[md] for md in ("general", "code", "tools") if (by_mode.get(md) or {}).get("gen_tps")), None)
     else:
@@ -291,6 +294,12 @@ def mode_score(e: dict, mode: str) -> dict:
     keys = mode_keys(mode)
     vals = [e["benchmarks"][k]["value"] for k in keys if k in e["benchmarks"] and e["benchmarks"][k].get("value") is not None]
     present = [k for k in keys if k in e["benchmarks"]]
+    if mode == "agent" and present:
+        # the harnesses aren't parts of the mode but ways of running the same tasks: the model's score is its best harness
+        # (as in the Harnesses section), whichever ones were measured
+        best = max(present, key=lambda k: e["benchmarks"][k].get("value") or 0)
+        return {"score": e["benchmarks"][best].get("value"), "n": len(present), "of": len(keys), "complete": True,
+                "partial": not e["benchmarks"][best].get("full"), "ranked": bool(e["benchmarks"][best].get("full")), "best": best}
     partial = [k for k in present if not e["benchmarks"][k].get("full")]
     complete = len(present) == len(keys)
     return {"score": sum(vals) / len(vals) if vals else None, "n": len(present), "of": len(keys),
@@ -495,9 +504,15 @@ def markdown(entries: list[dict]) -> str:
             L.append(f"| {medal(i, sc['ranked'])} | **{e['name']}**{flag(sc)} | {params_txt(m)} | {m.get('quant', '–')} | {score} | {s5}"
                      + " | ".join(cell(e, k) for k in keys) + f" | {sp.get('gen_tps') or '–'} |" + (f" {sp.get('prompt_tps') or '–'} |" if pp else ""))
         note = (" Cells show **pass@1 / pass@5** (n answers per problem, unbiased estimator); **Score** uses pass@1." if p5 else "")
-        L += ["", f"> **Score** = mean of the {title.lower()} benchmarks (headline metric of each).{note} Medals only go to rows with every "
-              "benchmark of the mode measured on the full set; the rest are listed below them: ⚠️ `k/N` = only k of the N benchmarks "
-              "measured (its score averages a different set, not comparable), `partial` / `n=` = run on a sample (indicative only).", ""]
+        if mode == "agent":                              # the harnesses are ways of running the same tasks
+            L += ["", "> **Score** = the model's best harness (SWE-bench Lite resolved with mini-SWE-agent, Pi or OpenCode, whichever "
+                  "were measured). Medals only go to rows whose best harness ran the full task set; `partial` / `n=` = run on a sample "
+                  "(indicative only).", ""]
+        else:
+            L += ["", f"> **Score** = mean of the {title.lower()} benchmarks (headline metric of each).{note} Medals only go to rows with "
+                  "every benchmark of the mode measured on the full set; the rest are listed below them: ⚠️ `k/N` = only k of the N "
+                  "benchmarks measured (its score averages a different set, not comparable), `partial` / `n=` = run on a sample "
+                  "(indicative only).", ""]
     if has_harnesses(entries):
         L += _harness_markdown(entries)
     if has_adapters(entries):

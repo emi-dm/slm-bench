@@ -2414,7 +2414,8 @@ class App:
                 more.append(T(f"‹ › más benchmarks ({hidden_l + hidden_r} ocultos)", f"‹ › more benchmarks ({hidden_l + hidden_r} hidden)"))
             if any(not (e["benchmarks"].get(k) or {}).get("full", True) for e, _ in rows for k in keys):
                 more.append(T("* medido sobre una muestra", "* measured on a sample"))
-            more.append(T("puntuación = media de los benchmarks del modo", "score = mean of the mode's benchmarks"))
+            more.append(T("puntuación = su mejor harness", "score = its best harness") if mode == "agent"
+                        else T("puntuación = media de los benchmarks del modo", "score = mean of the mode's benchmarks"))
             ui.hintline("  ·  ".join(more))
             ui.footer(T("←→ modo · ↑↓ fila · Enter ficha · <> columnas · o abrir HTML · d quitar · s ajustes · q volver",
                         "←→ mode · ↑↓ row · Enter card · <> columns · o open HTML · d remove · s settings · q back"))
@@ -2625,6 +2626,7 @@ class App:
                 continue
             hue = self.MODE_COLOR.get(mode, 209)
             L += [[], rule(cat.MODES[mode].get(lang, mode), hue), []]
+            nw = min(32, max(20, *(len(catl.get(k, {}).get("name", k)) for k in keys)))
             for k in keys:
                 r = e["benchmarks"][k]
                 extra = []
@@ -2633,11 +2635,11 @@ class App:
                 extra.append(f"n={r.get('n')}" + ("" if r.get("full") else " · " + T("muestra", "sample")))
                 if r.get("stderr"):
                     extra.append(f"± {r['stderr'] * 100:.1f}")
-                L.append([("  " + catl.get(k, {}).get("name", k)[:20].ljust(21), mut), (lb.pct(r.get("value"), 1).rjust(7), self._lb_heat(r.get("value"), hue)),
+                L.append([("  " + catl.get(k, {}).get("name", k)[:nw].ljust(nw + 1), mut), (lb.pct(r.get("value"), 1).rjust(7), self._lb_heat(r.get("value"), hue)),
                           ("  ", 0)] + meter(r.get("value"), mw, hue) + [("  " + " · ".join(extra), dim)])
             sp = lb.mode_speed(e, mode)
             if sp.get("gen_tps"):
-                L.append([("  " + T("Velocidad", "Speed").ljust(21), mut), (f"{sp['gen_tps']}".rjust(7), ui.color(255, None, True)), (" tok/s", dim)]
+                L.append([("  " + T("Velocidad", "Speed").ljust(nw + 1), mut), (f"{sp['gen_tps']}".rjust(7), ui.color(255, None, True)), (" tok/s", dim)]
                          + ([("  ·  prompt ", dim), (f"{sp['prompt_tps']} tok/s", mut)] if sp.get("prompt_tps") else [])
                          + ([(f"  ·  {sp['workers']} " + T("en paralelo", "in parallel"), dim)] if sp.get("workers") else []))
         b = list(e["benchmarks"].values())
