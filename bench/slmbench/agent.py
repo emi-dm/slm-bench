@@ -652,11 +652,14 @@ class Relay:
 # ---------------------------------------------------------------------------------------------
 # A run
 # ---------------------------------------------------------------------------------------------
-def server_context(base_url: str) -> int | None:
-    """The context one request can use on the server (llama-server: n_ctx per slot, from /props); None if it doesn't say."""
+def server_context(base_url: str, api_key: str = "") -> int | None:
+    """The context one request can use on the server (llama-server: n_ctx per slot, from /props); None if it doesn't say.
+    With the API key: a server that wants one (Unsloth Studio) answers /props only with it."""
+    from .servers import effective_key
     root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+    key = effective_key(base_url, api_key)
     try:
-        with _http(root + "/props", timeout=4) as r:
+        with _http(root + "/props", timeout=4, headers={"Authorization": f"Bearer {key}"} if key else None) as r:
             n = (json.loads(r.read()).get("default_generation_settings") or {}).get("n_ctx")
         return int(n) if n else None
     except (OSError, ValueError, TypeError):
@@ -667,7 +670,7 @@ def limits(s: Settings) -> tuple[int, int]:
     """(context, max tokens per answer) the harnesses are given. The context is the server's real one when it says so (else
     the setting); an answer may use at most a quarter of it, so the history always has room: a harness that reserves more
     for the answer than the window holds compacts or overflows at every step."""
-    ctx = server_context(s.base_url) or int(s.max_context or 32768)
+    ctx = server_context(s.base_url, s.api_key) or int(s.max_context or 32768)
     return ctx, max(1024, min(int(s.agent_max_tokens), ctx // 4))
 
 

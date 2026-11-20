@@ -13,6 +13,7 @@ report.json, test_output.txt, task.log.
 """
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -65,6 +66,17 @@ def sampling() -> dict:
 # ---------------------------------------------------------------------------------------------
 # mini-SWE-agent
 # ---------------------------------------------------------------------------------------------
+# SWE-bench images activate the task's conda env (testbed: the repo's Python, pytest…) in .bashrc, which a login shell
+# reads (mini-SWE-agent runs `bash -lc`) but `docker exec … bash -c` doesn't (Pi's and OpenCode's tools): without this
+# their `python` is conda's base one, with no pytest and none of the repo's dependencies.
+TESTBED_ENV = ["-e", "PATH=/opt/miniconda3/envs/testbed/bin:/opt/miniconda3/condabin:/opt/miniconda3/bin:/usr/local/sbin:"
+               "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "-e", "CONDA_DEFAULT_ENV=testbed",
+               "-e", "CONDA_PREFIX=/opt/miniconda3/envs/testbed"]
+# a tool call the model wrote as text (its chat template's markers) instead of making it: the harness takes it as the
+# final answer and stops
+TEXT_TOOL_CALL = re.compile(r"<\s*\|?\s*tool_call|<tool_call>|\[TOOL_CALLS\]|<function=|<\|python_tag\|>")
+
+
 def run_mini() -> tuple[str, str]:
     data = wd / "data"
     data.mkdir(exist_ok=True)
@@ -132,7 +144,7 @@ change and no tool call: your changes to the files in /testbed are the result.""
 
 
 def run_pi() -> tuple[str, str]:
-    c = sh("docker", "run", "-d", "--network", "none", "--memory", cfg.get("memory", "4g"), "--cpus", "2", "-w", "/testbed",
+    c = sh("docker", "run", "-d", "--network", "none", "--memory", cfg.get("memory", "4g"), "--cpus", "2", "-w", "/testbed", *TESTBED_ENV,
            "--label", f"slmbench-task={label}-{iid}", image, "sleep", str(int(cfg["timeout"]) + 600)).stdout.strip()
     if not c:
         return "Error: container did not start", ""
@@ -194,7 +206,7 @@ def run_opencode() -> tuple[str, str]:
     """OpenCode's tools run where OpenCode runs and can't be redirected, so OpenCode itself runs INSIDE the task container
     (its binary is copied in). The container shares the sandbox's network namespace (--network host) to reach the relay on
     127.0.0.1; the sandbox has no network, so that is all it can reach."""
-    c = sh("docker", "run", "-d", "--network", "host", "--memory", cfg.get("memory", "4g"), "--cpus", "2", "-w", "/testbed",
+    c = sh("docker", "run", "-d", "--network", "host", "--memory", cfg.get("memory", "4g"), "--cpus", "2", "-w", "/testbed", *TESTBED_ENV,
            "--label", f"slmbench-task={label}-{iid}", image, "sleep", str(int(cfg["timeout"]) + 600)).stdout.strip()
     if not c:
         return "Error: container did not start", ""
@@ -227,7 +239,7 @@ def run_opencode() -> tuple[str, str]:
     log.write(f"$ opencode run --format json … ({c[:12]})\n")
     events = open(wd / f"{iid}.opencode.jsonl", "w", buffering=1)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True, bufsize=1)
-    status, steps, session = None, 0, None
+    status, steps, session, last_text, last_reason = None, 0, None, "", ""
     deadline = time.time() + float(cfg["timeout"])
     timer = threading.Timer(float(cfg["timeout"]), lambda: kill_group(p))
     timer.start()
@@ -239,8 +251,12 @@ def run_opencode() -> tuple[str, str]:
             except ValueError:
                 continue
             session = session or e.get("sessionID")
+            part = e.get("part") or {}
+            if e.get("type") == "text":
+                last_text = part.get("text") or ""
             if e.get("type") == "step_finish":
                 steps += 1
+                last_reason = part.get("reason") or ""
                 if steps >= int(cfg["step_limit"]):
                     status = "LimitsExceeded"
                     kill_group(p)
@@ -257,6 +273,8 @@ def run_opencode() -> tuple[str, str]:
         events.close()
     if status is None:
         status = "TimeLimit" if time.time() >= deadline else ("Submitted" if p.returncode == 0 else f"Error (exit {p.returncode})")
+    if status == "Submitted" and last_reason == "stop" and TEXT_TOOL_CALL.search(last_text):
+        status = "ToolCallAsText"                     # it didn't finish: its last tool call came as text and OpenCode stopped
     if session:                                       # the whole session (reasoning, every tool call) for the viewer
         x = sh("docker", "exec", *envargs, c, "opencode", "export", session, timeout=120)
         if x.returncode == 0 and x.stdout.strip().startswith("{"):

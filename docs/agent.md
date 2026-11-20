@@ -37,11 +37,20 @@ every run and mix the projects, so two partial runs of the same size are compara
 
 All run with the same model settings: temperature, *max tokens per answer* (`agent_max_tokens`, 16384 by default: a
 step cut by the limit has no command and is wasted), the reasoning budget and the extra body. The harnesses are told the
-server's real context window (llama-server's per-slot `n_ctx`, else the *context* setting), and an answer may use at most
+server's real context window (llama-server's per-slot `n_ctx` from `/props`, asked with the API key when the server wants one, as Unsloth Studio does; else the *context* setting), and an answer may use at most
 a quarter of it: a harness that reserves more for the answer than the window holds compacts (Pi) or overflows
 (OpenCode) at every step. Pi's and OpenCode's own context compaction stay on, as in normal use. Limits per task: *max
 steps* (`agent_step_limit`, 100 model calls) and *time* (`agent_timeout`, 1800 s for the agent; grading comes on top).
 Running them on the same tasks compares a bash-only agent with two tool-calling ones on the same model.
+
+Every harness works with the task's own Python: SWE-bench images activate their `testbed` conda env (the repository's
+Python, pytest and dependencies) in `.bashrc`, which mini-SWE-agent's login shell reads; Pi's and OpenCode's tools run
+`bash -c`, so their containers get that env on `PATH`.
+
+**Exit status** (`tasks.jsonl`, the reports and the viewer): `Submitted` (the agent finished), `LimitsExceeded` (max
+steps), `TimeLimit`, `ToolCallAsText` (OpenCode stopped because the model wrote its tool call as text, with its chat
+template's markers, instead of making it: the agent didn't finish, a tool-calling failure of the model or the server's
+parser) or `Error: …`.
 
 **Choosing the harness.** In the TUI (*Run benchmarks*, mode *Agent*) the *Harness* field opens a pop-up: mini-SWE-agent,
 Pi, OpenCode, or all of them on the same tasks (three times the time). From the command line, with the benchmark keys:
