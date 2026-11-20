@@ -151,7 +151,18 @@ def load_entries(s: Settings | None = None) -> list[dict]:
     return out
 
 
+def _public_path(path: str) -> str:
+    """A local file as it may appear in the (shareable) leaderboard: org/repo:file for one in the Hugging Face cache, else
+    the file name; never the user's folders."""
+    from .lora import repo_of
+    repo = repo_of(path)
+    return f"{repo}:{Path(path).name}" if repo else Path(path).name
+
+
 def save_entry(e: dict, s: Settings | None = None):
+    m = e.get("meta") or {}
+    if str(m.get("lora_path") or "").startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", str(m.get("lora_path") or "")):
+        m["lora_path"] = _public_path(m["lora_path"])
     d = paths(s)["entries"]
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{e['id']}.json").write_text(json.dumps(e, indent=1, ensure_ascii=False))
