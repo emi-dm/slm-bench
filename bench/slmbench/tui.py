@@ -6,11 +6,13 @@ de slmbench en marcha (en este u otro proceso).
 """
 from __future__ import annotations
 
+import contextlib
 import curses
 import json
 import locale
 import os
 import random
+import sys
 import threading
 import time
 from dataclasses import dataclass, field as dc_field
@@ -3482,13 +3484,46 @@ def _utf8_locale() -> bool:
     return False
 
 
+@contextlib.contextmanager
+def _quiet_stderr():
+    """While curses owns the terminal, what anything writes to stderr (huggingface_hub's download bars, a library's
+    warning, from a background thread or a child process) goes to a log instead of over the screen. fd 2 is restored
+    before an error's traceback is printed."""
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        config.config_dir().mkdir(parents=True, exist_ok=True)
+        log = open(config.config_dir() / "tui-stderr.log", "ab", buffering=0)
+        saved = os.dup(2)
+    except OSError:
+        yield
+        return
+    sys.stderr.flush()
+    os.dup2(log.fileno(), 2)
+    try:
+        yield
+    finally:
+        try:
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        os.dup2(saved, 2)
+        os.close(saved)
+        log.close()
+
+
 def run_trajectories(folder: str, settings=None):
     """`slmbench traj FOLDER`: the trajectory explorer on its own."""
     global ASCII_ONLY
     ASCII_ONLY = not _utf8_locale()
     s = settings or config.load()
     i18n.set_lang(s.ui_lang)
-    curses.wrapper(lambda scr: App(scr, s).screen_trajectories(folder))
+    with _quiet_stderr():
+        curses.wrapper(lambda scr: App(scr, s).screen_trajectories(folder))
 
 
 def run_tui(settings=None):
@@ -3505,6 +3540,7 @@ def run_tui(settings=None):
         app.main()
         note.append(getattr(app, "exit_note", ""))
 
-    curses.wrapper(main)
+    with _quiet_stderr():
+        curses.wrapper(main)
     if note and note[0]:
         print(note[0])
